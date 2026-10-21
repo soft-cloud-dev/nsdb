@@ -43,6 +43,44 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(result["delegated_names"], 1)
         self.assertEqual(result["delegation_edges"], 1)
 
+    def test_apex_ns_is_ignored_and_glue_is_not_counted(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+            "example.\t3600\tIN\tNS\tns.example.",
+            "foo.example.\t3600\tIN\tA\t192.0.2.1",
+            "foo.example.\t3600\tIN\tNS\tns1.example.net.",
+            "ns1.example.net.\t3600\tIN\tA\t192.0.2.53",
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "fixture", (), aggregate)
+        self.assertEqual(aggregate.values, ["ns1.example.net"])
+        self.assertEqual(result["delegated_names"], 1)
+        self.assertEqual(result["delegation_edges"], 1)
+
+    def test_out_of_order_owner_is_rejected(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+            "z.example.\t3600\tIN\tNS\tns1.example.net.",
+            "a.example.\t3600\tIN\tNS\tns2.example.net.",
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+        )
+        with self.assertRaisesRegex(ValueError, "records are not ordered by owner"):
+            MOD.process_zone_stream(stream, "fixture", (), aggregate)
+
+    def test_locally_served_owner_and_target_are_excluded(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+            "a.example.\t3600\tIN\tNS\tns.home.arpa.",
+            "b.example.\t3600\tIN\tNS\tns1.example.net.",
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "fixture", ("home.arpa",), aggregate)
+        self.assertEqual(aggregate.values, ["ns1.example.net"])
+        self.assertEqual(result["locally_served_ns_targets_excluded"], 1)
+
     def test_root_ns_target_is_rejected(self):
         aggregate = DummyAggregate()
         stream = zone(

@@ -10,7 +10,12 @@ from pathlib import Path
 
 
 def normalize_name(value: str) -> str:
-    return value.strip().lower().rstrip(".")
+    name = value.strip().lower().rstrip(".")
+    try:
+        name.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"non-ASCII DNS name; expected A-label form: {value!r}") from exc
+    return name
 
 
 def load_special_zones(path: Path) -> tuple[str, ...]:
@@ -166,9 +171,13 @@ def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggr
             current_owner = owner
 
         if rrclass == "in" and rrtype == "ns":
-            target = normalize_name(rdata.split()[0])
-            if target:
-                current_targets.add(target)
+            parts = rdata.split()
+            if not parts:
+                raise ValueError(f"{label}: empty NS target for {owner}")
+            target = normalize_name(parts[0])
+            if not target:
+                raise ValueError(f"{label}: root/empty NS target for {owner}")
+            current_targets.add(target)
 
     flush_owner()
 

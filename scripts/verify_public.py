@@ -61,16 +61,32 @@ def expected(prev, cur, k):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("--previous", required=True, type=Path)
+    p.add_argument("--previous", type=Path)
     p.add_argument("--current", required=True, type=Path)
     p.add_argument("--delegation-changes", required=True, type=Path)
     p.add_argument("--nameserver-changes", required=True, type=Path)
     args = p.parse_args()
 
-    prev_k, prev_rows = parse_snapshot(args.previous)
     cur_k, cur_rows = parse_snapshot(args.current)
     diff_meta, actual_diff = parse_diff(args.delegation_changes)
-    _, actual_crossings = parse_diff(args.nameserver_changes)
+    crossings_meta, actual_crossings = parse_diff(args.nameserver_changes)
+    if args.previous is None:
+        if diff_meta.get("comparison_mode") != "initial":
+            raise SystemExit("first release must use comparison_mode=initial")
+        if diff_meta.get("previous") != "none" or crossings_meta.get("previous") != "none":
+            raise SystemExit("first release must use previous=none")
+        if diff_meta.get("previous_k") != "none" or diff_meta.get("previous_visibility_k") != "none":
+            raise SystemExit("first release cannot have previous threshold metadata")
+        if diff_meta.get("k") != str(cur_k) or crossings_meta.get("k") != str(cur_k):
+            raise SystemExit("first release threshold metadata differs from snapshot")
+        if diff_meta.get("public_verifiable") != "true":
+            raise SystemExit("first release must be marked public_verifiable=true")
+        if actual_diff or actual_crossings:
+            raise SystemExit("first release must not contain synthetic changes")
+        print("Initial public snapshot and empty diffs verified")
+        return
+
+    prev_k, prev_rows = parse_snapshot(args.previous)
 
     if cur_k < prev_k:
         if diff_meta.get("public_verifiable") != "false":

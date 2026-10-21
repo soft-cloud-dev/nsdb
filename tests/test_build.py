@@ -29,6 +29,31 @@ class BuildTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             MOD.normalize_name("ns1.exämple.")
 
+    def test_decimal_master_escape_is_canonicalized_without_creating_a_label_boundary(self):
+        self.assertEqual(
+            MOD.normalize_name(r"foo\046bar.Example."),
+            r"foo\046bar.example",
+        )
+
+    def test_escaped_backslash_is_canonicalized(self):
+        self.assertEqual(
+            MOD.normalize_name(r"foo\\bar.example."),
+            r"foo\092bar.example",
+        )
+
+    def test_invalid_punycode_alabel_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "invalid IDN A-label"):
+            MOD.normalize_name("xn--.example.")
+
+    def test_overlong_label_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "exceeds 63 octets"):
+            MOD.normalize_name(("a" * 64) + ".example.")
+
+    def test_overlong_fqdn_is_rejected(self):
+        name = ".".join(["a" * 63, "b" * 63, "c" * 63, "d" * 62]) + "."
+        with self.assertRaisesRegex(ValueError, "exceeds 255 wire octets"):
+            MOD.normalize_name(name)
+
     def test_ns_rrset_is_deduplicated_after_case_folding(self):
         aggregate = DummyAggregate()
         stream = zone(

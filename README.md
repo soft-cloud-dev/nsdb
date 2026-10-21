@@ -28,7 +28,9 @@ The build uses:
 
 The normalized IANA exclusion registry used by releases is pinned in [`config/locally-served-dns-zones.txt`](config/locally-served-dns-zones.txt). Daily releases never change exclusion semantics by fetching IANA live. A separate weekly workflow regenerates the normalized file and opens or updates a pull request only when the authoritative registry changes, so semantic changes are reviewed before merge.
 
-CZDS access is authenticated and subject to the applicable zone-file access agreements. Each zone file may be downloaded no more than once per 24-hour period. Raw zone data is kept outside this repository on a protected self-hosted runner and is never uploaded as a release artifact.
+CZDS access is authenticated and subject to the terms accepted for each registry/TLD. ICANN documents that the applicable zone-file agreement can differ by registry agreement generation and that users accept registry-operator terms for each TLD request. Current standard CZDS terms prohibit redistribution of the raw zone data except when incorporated into a qualifying value-added product or service, require reasonable protection against unauthorized access/use/disclosure, and limit access to a zone file to no more than once per 24-hour period. `nsdb` therefore keeps raw zone data outside this repository on a protected self-hosted runner and never uploads raw zones or domain-to-nameserver mappings as release artifacts.
+
+This repository does not claim that the publication threshold by itself establishes legal compliance for every TLD. The operator remains responsible for the exact terms accepted for every CZDS zone used by a build.
 
 ## Delegation counting
 
@@ -38,7 +40,7 @@ For each zone, the build:
 
 1. validates the first and final SOA records;
 2. validates record ordering needed for streaming owner-group processing;
-3. canonicalizes owner names and NS targets to lowercase ASCII A-label form and removes the trailing root dot;
+3. parses RFC 1035 master-file escapes, validates DNS wire-length limits, validates `xn--` A-labels, canonicalizes owner names and NS targets to lowercase ASCII representation, and removes the trailing root dot;
 4. ignores apex NS records because they describe the TLD itself rather than child delegations;
 5. groups NS records by delegation owner;
 6. deduplicates nameserver targets inside each owner RRset after canonicalization;
@@ -214,7 +216,7 @@ Each daily release contains:
 | `changes-counts.txt` | Full aggregate change totals and public threshold transitions |
 | `SHA256SUMS` | SHA-256 checksums for all published artifacts |
 
-The release workflow also creates a GitHub Artifact Attestation for the complete `dist/*` payload using `actions/attest@v4`. This binds each released file digest to the official GitHub Actions workflow through signed SLSA provenance. Downstream users can verify an artifact with the GitHub CLI:
+The release workflow also creates a GitHub Artifact Attestation for the complete `dist/*` payload using the immutable commit currently corresponding to `actions/attest@v4`. This binds each released file digest to the official GitHub Actions workflow through signed SLSA provenance. Downstream users can verify an artifact with the GitHub CLI:
 
 ```sh
 gh attestation verify nameservers.txt.gz --repo soft-cloud-dev/nsdb
@@ -321,6 +323,8 @@ For consecutive builds, pass the previous public snapshot, coverage, full counts
 ## Privacy threat model
 
 The threshold prevents direct publication of an individual nameserver count below `k`; it is **not** differential privacy and does not make visible nameservers anonymous.
+
+A hard threshold also does not hide threshold-crossing information from an active observer. For example, an actor who independently knows that it controls `k-1` delegations to a nameserver and then adds one more can infer the prior count when that nameserver first becomes visible as `<k|k|NA`. This is inherent to stateless hard-threshold publication and is not prevented by redacting the hidden side. The redaction prevents the dataset itself from publishing the exact hidden value; it does not protect against external knowledge chosen or observed by an adversary.
 
 The exact global totals in `counts.txt` and `changes-counts.txt` are computed over the complete private aggregate. Those totals can reveal aggregate movement in the suppressed tail. In unusually sparse change scenarios, external knowledge plus global totals may narrow the possible movement of one or more hidden nameservers.
 

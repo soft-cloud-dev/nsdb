@@ -52,6 +52,8 @@ jobs:
           umask 077
           mkdir -p "$NSDB_STATE_DIR/private/$DAY" dist previous
           chmod 700 "$NSDB_STATE_DIR" "$NSDB_STATE_DIR/private" "$NSDB_STATE_DIR/private/$DAY"
+          test -d "$NSDB_STATE_DIR/zones" || mkdir -m 700 "$NSDB_STATE_DIR/zones"
+          chmod 700 "$NSDB_STATE_DIR/zones"
 
       - name: Fetch or reuse CZDS zone files
         env:

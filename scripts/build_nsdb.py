@@ -9,13 +9,97 @@ import tarfile
 from pathlib import Path
 
 
-def normalize_name(value: str) -> str:
-    name = value.strip().lower().rstrip(".")
+def _parse_master_name(value: str) -> list[bytes]:
+    source = value.strip()
     try:
-        name.encode("ascii")
+        source.encode("ascii")
     except UnicodeEncodeError as exc:
-        raise ValueError(f"non-ASCII DNS name; expected A-label form: {value!r}") from exc
-    return name
+        raise ValueError(f"non-ASCII DNS name; expected A-label/master-file form: {value!r}") from exc
+
+    if source == ".":
+        return []
+
+    labels: list[bytearray] = [bytearray()]
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if char == "\\":
+            index += 1
+            if index >= len(source):
+                raise ValueError(f"dangling DNS master-file escape: {value!r}")
+            if (
+                index + 2 < len(source)
+                and source[index : index + 3].isdigit()
+            ):
+                octet = int(source[index : index + 3], 10)
+                if octet > 255:
+                    raise ValueError(f"DNS decimal escape exceeds 255: {value!r}")
+                labels[-1].append(octet)
+                index += 3
+                continue
+            labels[-1].append(ord(source[index]))
+            index += 1
+            continue
+
+        if char == ".":
+            if index == len(source) - 1:
+                index += 1
+                break
+            if not labels[-1]:
+                raise ValueError(f"empty DNS label: {value!r}")
+            labels.append(bytearray())
+            index += 1
+            continue
+
+        labels[-1].append(ord(char))
+        index += 1
+
+    if labels and not labels[-1]:
+        raise ValueError(f"empty DNS label: {value!r}")
+
+    result = [bytes(label) for label in labels]
+    for label in result:
+        if len(label) > 63:
+            raise ValueError(f"DNS label exceeds 63 octets: {value!r}")
+
+    wire_length = 1 + sum(1 + len(label) for label in result)
+    if wire_length > 255:
+        raise ValueError(f"DNS name exceeds 255 wire octets: {value!r}")
+
+    return result
+
+
+def _canonical_label(label: bytes, original: str) -> str:
+    if any(octet >= 128 for octet in label):
+        raise ValueError(f"non-ASCII DNS label; expected A-label form: {original!r}")
+
+    lowered = bytes(
+        octet + 32 if 65 <= octet <= 90 else octet
+        for octet in label
+    )
+
+    if lowered.startswith(b"xn--"):
+        try:
+            decoded = lowered.decode("ascii").encode("ascii").decode("idna")
+            round_trip = decoded.encode("idna").lower()
+        except UnicodeError as exc:
+            raise ValueError(f"invalid IDN A-label: {original!r}") from exc
+        if round_trip != lowered:
+            raise ValueError(f"non-canonical IDN A-label: {original!r}")
+
+    safe = bytearray(b"abcdefghijklmnopqrstuvwxyz0123456789-_")
+    output = []
+    for octet in lowered:
+        if octet in safe:
+            output.append(chr(octet))
+        else:
+            output.append(f"\\{octet:03d}")
+    return "".join(output)
+
+
+def normalize_name(value: str) -> str:
+    labels = _parse_master_name(value)
+    return ".".join(_canonical_label(label, value) for label in labels)
 
 
 def load_special_zones(path: Path) -> tuple[str, ...]:

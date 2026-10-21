@@ -78,14 +78,10 @@ def _canonical_label(label: bytes, original: str) -> str:
         for octet in label
     )
 
-    if lowered.startswith(b"xn--"):
-        try:
-            decoded = lowered.decode("ascii").encode("ascii").decode("idna")
-            round_trip = decoded.encode("idna").lower()
-        except UnicodeError as exc:
-            raise ValueError(f"invalid IDN A-label: {original!r}") from exc
-        if round_trip != lowered:
-            raise ValueError(f"non-canonical IDN A-label: {original!r}")
+    # DNS label comparison is ASCII case-insensitive (RFC 4343).
+    # An xn-- prefix does not require a DNS name, particularly an NS
+    # target, to pass Python's legacy IDNA2003 Unicode round-trip.
+    # Preserve the exact lowercased ASCII DNS label without decoding it.
 
     safe = bytearray(b"abcdefghijklmnopqrstuvwxyz0123456789-_")
     output = []
@@ -277,8 +273,10 @@ def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggr
             raise ValueError(f"{label}: records appear after final SOA")
 
         if owner == apex:
-            if delegated_started:
-                raise ValueError(f"{label}: apex record found after delegated records started")
+            # CZDS exports may place apex NS, DNSKEY, RRSIG, NSEC3PARAM
+            # and other metadata after lexicographically sorted child
+            # delegation owners. Do not count apex records, and do not
+            # reset previous_owner: child ordering must remain validated.
             continue
 
         delegated_started = True

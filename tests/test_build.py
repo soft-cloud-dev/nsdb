@@ -106,6 +106,16 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(aggregate.values, ["ns1.example.net"])
         self.assertEqual(result["locally_served_ns_targets_excluded"], 1)
 
+    def test_ns_rdata_with_extra_fields_is_rejected(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+            "foo.example.\t3600\tIN\tNS\tns1.example.net. unexpected",
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+        )
+        with self.assertRaisesRegex(ValueError, "extra RDATA fields"):
+            MOD.process_zone_stream(stream, "fixture", (), aggregate)
+
     def test_root_ns_target_is_rejected(self):
         aggregate = DummyAggregate()
         stream = zone(

@@ -1,0 +1,171 @@
+name: Daily NSDB release
+
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-nsdb-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: [self-hosted, nsdb]
+    timeout-minutes: 360
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ICANN_USERNAME: ${{ secrets.ICANN_USERNAME }}
+      ICANN_PASSWORD: ${{ secrets.ICANN_PASSWORD }}
+      NSDB_STATE_DIR: ${{ vars.NSDB_STATE_DIR || '/var/lib/nsdb' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Set UTC release date
+        id: date
+        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare private state
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+        run: |
+          umask 077
+          mkdir -p "$NSDB_STATE_DIR/reference" "$NSDB_STATE_DIR/private/$DAY" dist previous
+          chmod 700 "$NSDB_STATE_DIR" "$NSDB_STATE_DIR/reference" "$NSDB_STATE_DIR/private" "$NSDB_STATE_DIR/private/$DAY"
+
+      - name: Fetch IANA locally-served zone registry
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+        run: |
+          python scripts/fetch_special_zones.py             --output "$NSDB_STATE_DIR/reference/locally-served-$DAY.txt"
+
+      - name: Fetch or reuse CZDS zone files
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+        run: |
+          python scripts/fetch_czds.py             --state-dir "$NSDB_STATE_DIR"             --day "$DAY"
+
+      - name: Build private exact aggregate
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+        run: |
+          python scripts/build_nsdb.py             --zones-dir "$NSDB_STATE_DIR/zones/$DAY"             --special-zones "$NSDB_STATE_DIR/reference/locally-served-$DAY.txt"             --private-counts "$NSDB_STATE_DIR/private/$DAY/nameserver-counts.txt"             --coverage "$NSDB_STATE_DIR/private/$DAY/coverage.txt"             --counts "$NSDB_STATE_DIR/private/$DAY/counts.txt"
+
+      - name: Locate previous public release
+        id: previous
+        env:
+          TAG: nsdb-${{ steps.date.outputs.day }}
+        run: |
+          PREVIOUS_TAG="$(
+            gh release list               --limit 100               --json tagName,isDraft,isPrerelease,publishedAt               --jq '[.[] | select(.isDraft == false and .isPrerelease == false and .tagName != env.TAG and (.tagName | startswith("nsdb-")))] | sort_by(.publishedAt) | reverse | .[0].tagName // ""'
+          )"
+
+          if [ -z "$PREVIOUS_TAG" ]; then
+            echo "found=false" >> "$GITHUB_OUTPUT"
+            echo "tag=none" >> "$GITHUB_OUTPUT"
+            echo "day=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PREVIOUS_DAY="${PREVIOUS_TAG#nsdb-}"
+          gh release download "$PREVIOUS_TAG"             --pattern nameservers.txt.gz             --pattern coverage.txt             --pattern counts.txt             --dir previous
+          gzip -dc previous/nameservers.txt.gz > previous/nameservers.txt
+
+          echo "found=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$PREVIOUS_TAG" >> "$GITHUB_OUTPUT"
+          echo "day=$PREVIOUS_DAY" >> "$GITHUB_OUTPUT"
+
+      - name: Build public snapshot and diffs
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+          CURRENT_TAG: nsdb-${{ steps.date.outputs.day }}
+          PREVIOUS_FOUND: ${{ steps.previous.outputs.found }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          PREVIOUS_DAY: ${{ steps.previous.outputs.day }}
+        run: |
+          K="$(tr -d '[:space:]' < config/k.txt)"
+          args=(
+            --current-private "$NSDB_STATE_DIR/private/$DAY/nameserver-counts.txt"
+            --current-full-counts "$NSDB_STATE_DIR/private/$DAY/counts.txt"
+            --current-coverage "$NSDB_STATE_DIR/private/$DAY/coverage.txt"
+            --k "$K"
+            --current-tag "$CURRENT_TAG"
+            --previous-tag "$PREVIOUS_TAG"
+            --out dist
+          )
+
+          if [ "$PREVIOUS_FOUND" = "true" ]; then
+            args+=(
+              --previous-public previous/nameservers.txt
+              --previous-full-counts previous/counts.txt
+              --previous-coverage previous/coverage.txt
+            )
+            if [ -f "$NSDB_STATE_DIR/private/$PREVIOUS_DAY/nameserver-counts.txt" ]; then
+              args+=(--previous-private "$NSDB_STATE_DIR/private/$PREVIOUS_DAY/nameserver-counts.txt")
+            fi
+          fi
+
+          python scripts/publish_nsdb.py "${args[@]}"
+          cp "$NSDB_STATE_DIR/reference/locally-served-$DAY.txt" dist/special-zones.txt
+
+      - name: Verify public diff invariants
+        if: steps.previous.outputs.found == 'true'
+        run: |
+          python scripts/verify_public.py             --previous previous/nameservers.txt             --current dist/nameservers.txt             --delegation-changes dist/delegation-changes.txt             --nameserver-changes dist/nameserver-changes.txt
+
+      - name: Generate checksums
+        run: |
+          rm -f dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum               nameservers.txt               nameservers.txt.gz               delegation-changes.txt               delegation-changes.txt.gz               nameserver-changes.txt               nameserver-changes.txt.gz               coverage.txt               special-zones.txt               counts.txt               changes-counts.txt               > SHA256SUMS
+          )
+
+      - name: Publish daily release
+        env:
+          TAG: nsdb-${{ steps.date.outputs.day }}
+          DAY: ${{ steps.date.outputs.day }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+        run: |
+          NOTES="$(cat <<EOF
+          Daily ICANN CZDS nameserver delegation aggregate.
+
+          UTC snapshot date: $DAY
+          Compared with: $PREVIOUS_TAG
+
+          Snapshot counts:
+          $(cat dist/counts.txt)
+
+          Change counts:
+          $(cat dist/changes-counts.txt)
+          EOF
+          )"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --notes "$NOTES"
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/*               --title "NSDB snapshot $DAY"               --notes "$NOTES"
+          fi
+
+      - name: Prune old raw zone files
+        if: success()
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+        run: |
+          find "$NSDB_STATE_DIR/zones"             -mindepth 1             -maxdepth 1             -type d             ! -name "$DAY"             -mtime +2             -exec rm -rf -- {} +

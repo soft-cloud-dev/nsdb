@@ -98,6 +98,18 @@ def normalize_name(value: str) -> str:
     return ".".join(_canonical_label(label, value) for label in labels)
 
 
+def dns_canonical_owner_key(value: str) -> tuple[bytes, ...]:
+    """RFC 4034 section 6.1: compare wire labels from right to left.
+
+    Compare raw label octets, not dotted strings, to preserve the ordering
+    of escaped dots and escaped decimal octets. ASCII case is insignificant.
+    """
+    return tuple(
+        bytes(octet + 32 if 65 <= octet <= 90 else octet for octet in label)
+        for label in reversed(_parse_master_name(value))
+    )
+
+
 def parse_single_name_rdata(rdata: str, label: str, owner: str) -> str:
     source = rdata.strip()
     if not source:
@@ -208,10 +220,12 @@ def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggr
     apex = None
     first_soa_serial = "NA"
     saw_final_soa = False
-    delegated_started = False
     current_owner = None
     current_targets = set()
     previous_owner = None
+    previous_owner_canonical_key = None
+    plain_order_possible = True
+    canonical_order_possible = True
     delegated_names = 0
     delegation_edges = 0
     excluded_owners = 0
@@ -273,23 +287,40 @@ def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggr
             raise ValueError(f"{label}: records appear after final SOA")
 
         if owner == apex:
-            # CZDS exports may place apex NS, DNSKEY, RRSIG, NSEC3PARAM
-            # and other metadata after lexicographically sorted child
-            # delegation owners. Do not count apex records, and do not
-            # reset previous_owner: child ordering must remain validated.
+            # CZDS exports may place apex metadata anywhere after the
+            # first SOA. Apex NS records are not child delegations.
             continue
 
-        delegated_started = True
-        if previous_owner is not None and owner < previous_owner:
-            raise ValueError(f"{label}: records are not ordered by owner: {owner} after {previous_owner}")
-        previous_owner = owner
+        if rrclass != "in" or rrtype != "ns":
+            # Glue and DNSSEC records do not advance delegation-owner
+            # grouping or ordering. An unrelated A/AAAA/RRSIG owner may
+            # appear between NS records for the same delegation.
+            continue
 
         if current_owner != owner:
+            canonical_key = dns_canonical_owner_key(owner_raw)
+            if previous_owner is not None:
+                # ICANN specifies alphabetical records, but real CZDS
+                # exports use more than one DNS name ordering convention.
+                # Accept a zone only while *one entire* delegation stream
+                # remains consistently ordered. Returning to an earlier
+                # delegation owner is impossible in either sorted order,
+                # preventing double counts.
+                if owner < previous_owner:
+                    plain_order_possible = False
+                if canonical_key < previous_owner_canonical_key:
+                    canonical_order_possible = False
+                if not (plain_order_possible or canonical_order_possible):
+                    raise ValueError(
+                        f"{label}: NS delegation owners violate both plain and DNS "
+                        f"canonical ordering: {owner} after {previous_owner}"
+                    )
             flush_owner()
             current_owner = owner
+            previous_owner = owner
+            previous_owner_canonical_key = canonical_key
 
-        if rrclass == "in" and rrtype == "ns":
-            current_targets.add(parse_single_name_rdata(rdata, label, owner))
+        current_targets.add(parse_single_name_rdata(rdata, label, owner))
 
     flush_owner()
 

@@ -102,6 +102,42 @@ def normalize_name(value: str) -> str:
     return ".".join(_canonical_label(label, value) for label in labels)
 
 
+def parse_single_name_rdata(rdata: str, label: str, owner: str) -> str:
+    source = rdata.strip()
+    if not source:
+        raise ValueError(f"{label}: empty NS target for {owner}")
+
+    escaped = False
+    index = 0
+    while index < len(source):
+        char = source[index]
+        if escaped:
+            if char.isdigit() and index + 2 < len(source) and source[index : index + 3].isdigit():
+                index += 3
+            else:
+                index += 1
+            escaped = False
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if char.isspace():
+            if source[index:].strip():
+                raise ValueError(f"{label}: NS record has extra RDATA fields for {owner}")
+            source = source[:index]
+            break
+        index += 1
+
+    if escaped:
+        raise ValueError(f"{label}: dangling escape in NS target for {owner}")
+
+    target = normalize_name(source)
+    if not target:
+        raise ValueError(f"{label}: root/empty NS target for {owner}")
+    return target
+
+
 def load_special_zones(path: Path) -> tuple[str, ...]:
     zones = []
     with open(path, "r", encoding="utf-8") as fh:
@@ -255,13 +291,7 @@ def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggr
             current_owner = owner
 
         if rrclass == "in" and rrtype == "ns":
-            parts = rdata.split()
-            if not parts:
-                raise ValueError(f"{label}: empty NS target for {owner}")
-            target = normalize_name(parts[0])
-            if not target:
-                raise ValueError(f"{label}: root/empty NS target for {owner}")
-            current_targets.add(target)
+            current_targets.add(parse_single_name_rdata(rdata, label, owner))
 
     flush_owner()
 

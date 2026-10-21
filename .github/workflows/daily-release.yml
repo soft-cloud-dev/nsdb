@@ -45,26 +45,27 @@ jobs:
           DAY: ${{ steps.date.outputs.day }}
         run: |
           umask 077
-          mkdir -p "$NSDB_STATE_DIR/reference" "$NSDB_STATE_DIR/private/$DAY" dist previous
-          chmod 700 "$NSDB_STATE_DIR" "$NSDB_STATE_DIR/reference" "$NSDB_STATE_DIR/private" "$NSDB_STATE_DIR/private/$DAY"
-
-      - name: Fetch IANA locally-served zone registry
-        env:
-          DAY: ${{ steps.date.outputs.day }}
-        run: |
-          python scripts/fetch_special_zones.py             --output "$NSDB_STATE_DIR/reference/locally-served-$DAY.txt"
+          mkdir -p "$NSDB_STATE_DIR/private/$DAY" dist previous
+          chmod 700 "$NSDB_STATE_DIR" "$NSDB_STATE_DIR/private" "$NSDB_STATE_DIR/private/$DAY"
 
       - name: Fetch or reuse CZDS zone files
         env:
           DAY: ${{ steps.date.outputs.day }}
         run: |
-          python scripts/fetch_czds.py             --state-dir "$NSDB_STATE_DIR"             --day "$DAY"
+          python scripts/fetch_czds.py \
+            --state-dir "$NSDB_STATE_DIR" \
+            --day "$DAY"
 
       - name: Build private exact aggregate
         env:
           DAY: ${{ steps.date.outputs.day }}
         run: |
-          python scripts/build_nsdb.py             --zones-dir "$NSDB_STATE_DIR/zones/$DAY"             --special-zones "$NSDB_STATE_DIR/reference/locally-served-$DAY.txt"             --private-counts "$NSDB_STATE_DIR/private/$DAY/nameserver-counts.txt"             --coverage "$NSDB_STATE_DIR/private/$DAY/coverage.txt"             --counts "$NSDB_STATE_DIR/private/$DAY/counts.txt"
+          python scripts/build_nsdb.py \
+            --zones-dir "$NSDB_STATE_DIR/zones/$DAY" \
+            --special-zones config/locally-served-dns-zones.txt \
+            --private-counts "$NSDB_STATE_DIR/private/$DAY/nameserver-counts.txt" \
+            --coverage "$NSDB_STATE_DIR/private/$DAY/coverage.txt" \
+            --counts "$NSDB_STATE_DIR/private/$DAY/counts.txt"
 
       - name: Locate previous public release
         id: previous
@@ -72,7 +73,10 @@ jobs:
           TAG: nsdb-${{ steps.date.outputs.day }}
         run: |
           PREVIOUS_TAG="$(
-            gh release list               --limit 100               --json tagName,isDraft,isPrerelease,publishedAt               --jq '[.[] | select(.isDraft == false and .isPrerelease == false and .tagName != env.TAG and (.tagName | startswith("nsdb-")))] | sort_by(.publishedAt) | reverse | .[0].tagName // ""'
+            gh release list \
+              --limit 100 \
+              --json tagName,isDraft,isPrerelease,publishedAt \
+              --jq '[.[] | select(.isDraft == false and .isPrerelease == false and .tagName != env.TAG and (.tagName | startswith("nsdb-")))] | sort_by(.publishedAt) | reverse | .[0].tagName // ""'
           )"
 
           if [ -z "$PREVIOUS_TAG" ]; then
@@ -83,7 +87,11 @@ jobs:
           fi
 
           PREVIOUS_DAY="${PREVIOUS_TAG#nsdb-}"
-          gh release download "$PREVIOUS_TAG"             --pattern nameservers.txt.gz             --pattern coverage.txt             --pattern counts.txt             --dir previous
+          gh release download "$PREVIOUS_TAG" \
+            --pattern nameservers.txt.gz \
+            --pattern coverage.txt \
+            --pattern counts.txt \
+            --dir previous
           gzip -dc previous/nameservers.txt.gz > previous/nameservers.txt
 
           echo "found=true" >> "$GITHUB_OUTPUT"
@@ -121,19 +129,34 @@ jobs:
           fi
 
           python scripts/publish_nsdb.py "${args[@]}"
-          cp "$NSDB_STATE_DIR/reference/locally-served-$DAY.txt" dist/special-zones.txt
+          cp config/locally-served-dns-zones.txt dist/special-zones.txt
 
       - name: Verify public diff invariants
         if: steps.previous.outputs.found == 'true'
         run: |
-          python scripts/verify_public.py             --previous previous/nameservers.txt             --current dist/nameservers.txt             --delegation-changes dist/delegation-changes.txt             --nameserver-changes dist/nameserver-changes.txt
+          python scripts/verify_public.py \
+            --previous previous/nameservers.txt \
+            --current dist/nameservers.txt \
+            --delegation-changes dist/delegation-changes.txt \
+            --nameserver-changes dist/nameserver-changes.txt
 
       - name: Generate checksums
         run: |
           rm -f dist/SHA256SUMS
           (
             cd dist
-            sha256sum               nameservers.txt               nameservers.txt.gz               delegation-changes.txt               delegation-changes.txt.gz               nameserver-changes.txt               nameserver-changes.txt.gz               coverage.txt               special-zones.txt               counts.txt               changes-counts.txt               > SHA256SUMS
+            sha256sum \
+              nameservers.txt \
+              nameservers.txt.gz \
+              delegation-changes.txt \
+              delegation-changes.txt.gz \
+              nameserver-changes.txt \
+              nameserver-changes.txt.gz \
+              coverage.txt \
+              special-zones.txt \
+              counts.txt \
+              changes-counts.txt \
+              > SHA256SUMS
           )
 
       - name: Publish daily release
@@ -160,7 +183,9 @@ jobs:
             gh release edit "$TAG" --notes "$NOTES"
             gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$TAG" dist/*               --title "NSDB snapshot $DAY"               --notes "$NOTES"
+            gh release create "$TAG" dist/* \
+              --title "NSDB snapshot $DAY" \
+              --notes "$NOTES"
           fi
 
       - name: Prune old raw zone files
@@ -168,4 +193,10 @@ jobs:
         env:
           DAY: ${{ steps.date.outputs.day }}
         run: |
-          find "$NSDB_STATE_DIR/zones"             -mindepth 1             -maxdepth 1             -type d             ! -name "$DAY"             -mtime +2             -exec rm -rf -- {} +
+          find "$NSDB_STATE_DIR/zones" \
+            -mindepth 1 \
+            -maxdepth 1 \
+            -type d \
+            ! -name "$DAY" \
+            -mtime +2 \
+            -exec rm -rf -- {} +

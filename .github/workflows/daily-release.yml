@@ -18,6 +18,9 @@ jobs:
   publish:
     runs-on: [self-hosted, nsdb]
     timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
     env:
       GH_TOKEN: ${{ github.token }}
       ICANN_USERNAME: ${{ secrets.ICANN_USERNAME }}
@@ -133,14 +136,20 @@ jobs:
           python scripts/publish_nsdb.py "${args[@]}"
           cp config/locally-served-dns-zones.txt dist/special-zones.txt
 
-      - name: Verify public diff invariants
-        if: steps.previous.outputs.found == 'true'
+      - name: Verify public snapshot and diff invariants
         run: |
-          python scripts/verify_public.py \
-            --previous previous/nameservers.txt \
-            --current dist/nameservers.txt \
-            --delegation-changes dist/delegation-changes.txt \
-            --nameserver-changes dist/nameserver-changes.txt
+          if [ "${{ steps.previous.outputs.found }}" = "true" ]; then
+            python scripts/verify_public.py \
+              --previous previous/nameservers.txt \
+              --current dist/nameservers.txt \
+              --delegation-changes dist/delegation-changes.txt \
+              --nameserver-changes dist/nameserver-changes.txt
+          else
+            python scripts/verify_public.py \
+              --current dist/nameservers.txt \
+              --delegation-changes dist/delegation-changes.txt \
+              --nameserver-changes dist/nameserver-changes.txt
+          fi
 
       - name: Generate checksums
         run: |
@@ -160,6 +169,9 @@ jobs:
               changes-counts.txt \
               > SHA256SUMS
           )
+
+      - name: Verify release payload before attestation
+        run: python scripts/verify_release_assets.py --dir dist
 
       - name: Attest release artifacts
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6

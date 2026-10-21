@@ -144,8 +144,85 @@ class BuildTests(unittest.TestCase):
             "a.example.\t3600\tIN\tNS\tns2.example.net.",
             "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
         )
-        with self.assertRaisesRegex(ValueError, "records are not ordered by owner"):
+        with self.assertRaisesRegex(ValueError, "NS delegation owners violate both"):
             MOD.process_zone_stream(stream, "fixture", (), aggregate)
+
+    def test_dnssec_canonical_order_accepts_ns1_biz_after_ns1_biz_news(self):
+        # Reproduces the .biz transition from run 39678700349.
+        # Dotted-string ordering rejects this, but right-to-left DNS label
+        # ordering accepts it: biz-news < ns1 in the second-to-last label.
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "ns1.biz-news.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "ns1.biz.\t3600\tIN\tNS\tns2.example.net.",
+            "biz.\t3600\tIN\tDNSKEY\t257 3 8 AQAB",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "biz-fixture", (), aggregate)
+        self.assertEqual(result["delegated_names"], 2)
+        self.assertEqual(result["delegation_edges"], 2)
+        self.assertEqual(
+            aggregate.values, ["ns1.example.net", "ns2.example.net"]
+        )
+
+    def test_glue_between_same_owner_ns_records_preserves_rrset(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "ns1.biz-news.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "a.ns1.biz-news.biz.\t3600\tIN\tA\t192.0.2.9",
+            "ns1.biz-news.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "ns1.biz-news.biz.\t3600\tIN\tNS\tns2.example.net.",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "biz-fixture", (), aggregate)
+        self.assertEqual(result["delegated_names"], 1)
+        self.assertEqual(result["delegation_edges"], 2)
+        self.assertEqual(
+            sorted(aggregate.values), ["ns1.example.net", "ns2.example.net"]
+        )
+
+    def test_plain_lexical_order_is_still_supported(self):
+        # Two names can be plain-sorted but reverse-sorted canonically;
+        # the input convention must be consistent across a whole zone.
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "a.ns1.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "b.biz.\t3600\tIN\tNS\tns2.example.net.",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "fixture", (), aggregate)
+        self.assertEqual(result["delegated_names"], 2)
+        self.assertEqual(result["delegation_edges"], 2)
+
+    def test_inconsistent_ordering_modes_are_rejected(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            # First pair is plain-increasing, canonical-decreasing.
+            "a.ns1.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "b.biz.\t3600\tIN\tNS\tns2.example.net.",
+            # Second pair is plain-decreasing, canonical-increasing.
+            "a.biz.\t3600\tIN\tNS\tns3.example.net.",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+        )
+        with self.assertRaisesRegex(ValueError, "NS delegation owners violate both"):
+            MOD.process_zone_stream(stream, "fixture", (), aggregate)
+
+    def test_non_ns_records_do_not_affect_ordering(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "a.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "z.biz.\t3600\tIN\tA\t192.0.2.1",
+            "b.biz.\t3600\tIN\tNS\tns2.example.net.",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "fixture", (), aggregate)
+        self.assertEqual(result["delegated_names"], 2)
+        self.assertEqual(result["delegation_edges"], 2)
 
     def test_locally_served_owner_and_target_are_excluded(self):
         aggregate = DummyAggregate()

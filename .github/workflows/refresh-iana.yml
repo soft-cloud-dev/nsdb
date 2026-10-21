@@ -1,0 +1,70 @@
+name: Refresh IANA locally-served zones
+
+on:
+  schedule:
+    - cron: '41 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-iana-locally-served
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: automation/iana-locally-served
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Fetch normalized IANA registry
+        run: |
+          python scripts/fetch_special_zones.py --output /tmp/locally-served-dns-zones.txt
+
+      - name: Detect registry change
+        id: diff
+        run: |
+          if cmp -s /tmp/locally-served-dns-zones.txt config/locally-served-dns-zones.txt; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Update automation branch
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH" origin/main
+          cp /tmp/locally-served-dns-zones.txt config/locally-served-dns-zones.txt
+          git add config/locally-served-dns-zones.txt
+          git commit -m "Update IANA locally-served DNS registry"
+          git push --force origin "HEAD:$BRANCH"
+
+      - name: Open update pull request
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          if gh pr list --head "$BRANCH" --base main --state open --json number --jq 'length' | grep -qx 0; then
+            gh pr create \
+              --head "$BRANCH" \
+              --base main \
+              --title "Update IANA locally-served DNS registry" \
+              --body "Automated refresh of the normalized IANA Locally-Served DNS Zones registry. Review the semantic change before merging because this file affects delegation exclusion semantics."
+          fi

@@ -38,7 +38,15 @@ def rethreshold_public(path: Path, k: int) -> dict[str, int]:
     return load_visible(path, k)
 
 
-def build_diff(prev: dict[str, int], cur: dict[str, int], k: int):
+def build_diff(
+    prev: dict[str, int],
+    cur: dict[str, int],
+    current_k: int,
+    previous_k: int | None = None,
+):
+    if previous_k is None:
+        previous_k = current_k
+
     changes = []
     crossings = []
     for name in sorted(prev.keys() | cur.keys()):
@@ -48,16 +56,19 @@ def build_diff(prev: dict[str, int], cur: dict[str, int], k: int):
             continue
         if pv is None and cv is None:
             continue
-        previous = str(pv) if pv is not None else f"<{k}"
-        current = str(cv) if cv is not None else f"<{k}"
+
+        previous = str(pv) if pv is not None else f"<{previous_k}"
+        current = str(cv) if cv is not None else f"<{current_k}"
         delta = str(cv - pv) if pv is not None and cv is not None else "NA"
         if delta != "NA" and not delta.startswith("-"):
             delta = "+" + delta
+
         changes.append((name, previous, current, delta))
         if pv is None and cv is not None:
             crossings.append(("+", name))
         elif pv is not None and cv is None:
             crossings.append(("-", name))
+
     return changes, crossings
 
 
@@ -131,22 +142,35 @@ def main():
 
     previous_k = None
     previous_visible = {}
+    previous_visibility_k = args.k
     public_verifiable = True
+    comparison_mode = "initial"
 
     if args.previous_public and args.previous_public.exists():
         previous_k = parse_k_header(args.previous_public)
-        if args.previous_private and args.previous_private.exists():
-            previous_visible = load_visible(args.previous_private, args.k)
-            if args.k >= previous_k:
-                public_previous = rethreshold_public(args.previous_public, args.k)
-                if public_previous != previous_visible:
-                    raise SystemExit("private previous counts disagree with re-thresholded public snapshot")
-            else:
-                public_verifiable = False
+
+        if args.k < previous_k:
+            # A lowered threshold must never retroactively expose yesterday's
+            # private sub-threshold count. Use only what yesterday's public
+            # snapshot disclosed and mark missing values as <previous_k.
+            previous_visible = load_visible(args.previous_public, previous_k)
+            previous_visibility_k = previous_k
+            public_verifiable = False
+            comparison_mode = "k-lowered"
         else:
-            if args.k < previous_k:
-                raise SystemExit("lowering k requires the previous private count file")
+            # With an unchanged or raised threshold, yesterday's public
+            # snapshot contains everything needed for a same-threshold
+            # comparison at the current k.
             previous_visible = rethreshold_public(args.previous_public, args.k)
+            previous_visibility_k = args.k
+            comparison_mode = "k-raised" if args.k > previous_k else "normal"
+
+            if args.previous_private and args.previous_private.exists():
+                private_previous = load_visible(args.previous_private, args.k)
+                if private_previous != previous_visible:
+                    raise SystemExit(
+                        "private previous counts disagree with re-thresholded public snapshot"
+                    )
     elif args.previous_tag != "none":
         raise SystemExit("previous tag supplied without previous public snapshot")
 
@@ -155,7 +179,12 @@ def main():
 
     has_previous = args.previous_public is not None and args.previous_public.exists()
     if has_previous:
-        changes, crossings = build_diff(previous_visible, current_visible, args.k)
+        changes, crossings = build_diff(
+            previous_visible,
+            current_visible,
+            current_k=args.k,
+            previous_k=previous_visibility_k,
+        )
     else:
         changes, crossings = [], []
 
@@ -165,12 +194,15 @@ def main():
     previous_coverage = load_coverage(args.previous_coverage)
     current_coverage = load_coverage(args.current_coverage)
     coverage_changed = bool(previous_coverage) and previous_coverage != current_coverage
-    comparison_break = coverage_changed or (previous_k is not None and args.k < previous_k)
+    comparison_break = coverage_changed or comparison_mode == "k-lowered"
 
     diff_path = args.out / "delegation-changes.txt"
     with open(diff_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(f"# k={args.k}\n")
         fh.write(f"# previous_k={previous_k_text}\n")
+        fh.write(f"# previous_visibility_k={previous_visibility_k if has_previous else 'none'}\n")
+        fh.write(f"# current_visibility_k={args.k}\n")
+        fh.write(f"# comparison_mode={comparison_mode}\n")
         fh.write(f"# k_changed={bool_text(k_changed)}\n")
         fh.write(f"# coverage_changed={bool_text(coverage_changed)}\n")
         fh.write(f"# comparison_break={bool_text(comparison_break)}\n")
@@ -185,6 +217,11 @@ def main():
     ns_changes_path = args.out / "nameserver-changes.txt"
     with open(ns_changes_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(f"# k={args.k}\n")
+        fh.write(f"# previous_k={previous_k_text}\n")
+        fh.write(f"# previous_visibility_k={previous_visibility_k if has_previous else 'none'}\n")
+        fh.write(f"# current_visibility_k={args.k}\n")
+        fh.write(f"# comparison_mode={comparison_mode}\n")
+        fh.write(f"# comparison_break={bool_text(comparison_break)}\n")
         fh.write(f"# previous={args.previous_tag}\n")
         fh.write(f"# current={args.current_tag}\n")
         fh.write("# format=operation|nameserver\n")
@@ -223,6 +260,7 @@ def main():
     with open(cc_path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(f"k={args.k}\n")
         fh.write(f"previous_k={previous_k_text}\n")
+        fh.write(f"comparison_mode={comparison_mode}\n")
         fh.write(f"k_changed={bool_text(k_changed)}\n")
         fh.write(f"coverage_changed={bool_text(coverage_changed)}\n")
         fh.write(f"comparison_break={bool_text(comparison_break)}\n")

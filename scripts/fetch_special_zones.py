@@ -7,7 +7,7 @@ from pathlib import Path
 import requests
 
 SOURCE = "https://www.iana.org/assignments/locally-served-dns-zones/locally-served-dns-zones.txt"
-ZONE_RE = re.compile(r"^\s*([A-Z0-9_.-]+\.ARPA)\s+", re.IGNORECASE)
+ZONE_RE = re.compile(r"^\s*([A-Z0-9_.-]+\.ARPA)\.?\s+", re.IGNORECASE)
 
 
 def main():

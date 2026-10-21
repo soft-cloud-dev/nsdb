@@ -164,7 +164,7 @@ jobs:
       - name: Attest release artifacts
         uses: actions/attest@v4
         with:
-          subject-checksums: dist/SHA256SUMS
+          subject-path: 'dist/*'
 
       - name: Publish daily release
         env:

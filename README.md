@@ -4,6 +4,10 @@ Daily nameserver delegation statistics derived from ICANN Centralized Zone Data 
 
 `nsdb` publishes aggregate nameserver counts. It does **not** publish CZDS zone files or domain-to-nameserver mappings.
 
+## License status
+
+No open-source or aggregate-data license has been granted yet. Public repository visibility does not itself grant reuse rights. The maintainer decision is tracked in [issue #1](https://github.com/soft-cloud-dev/nsdb/issues/1); code and data-artifact licensing must be chosen explicitly and documented separately if their terms differ.
+
 ## Public data model
 
 Let `count_day(n)` be the number of unique delegated DNS names whose NS RRset references nameserver `n` on a given build day.

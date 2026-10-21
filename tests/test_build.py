@@ -41,9 +41,15 @@ class BuildTests(unittest.TestCase):
             r"foo\092bar.example",
         )
 
-    def test_invalid_punycode_alabel_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "invalid IDN A-label"):
-            MOD.normalize_name("xn--.example.")
+    def test_dns_label_with_xn_prefix_is_preserved_without_idna_decoding(self):
+        # Reproduces the real CZDS nameserver rejected by run 39677851872.
+        self.assertEqual(
+            MOD.normalize_name("xn--ns-nt3n.rackspace.com."),
+            "xn--ns-nt3n.rackspace.com",
+        )
+        # xn-- has meaning to IDNA consumers, but DNS matching requires
+        # only valid label bytes and ASCII case folding.
+        self.assertEqual(MOD.normalize_name("XN--.EXAMPLE."), "xn--.example")
 
     def test_overlong_label_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "exceeds 63 octets"):
@@ -82,6 +88,53 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(aggregate.values, ["ns1.example.net"])
         self.assertEqual(result["delegated_names"], 1)
         self.assertEqual(result["delegation_edges"], 1)
+
+    def test_apex_metadata_after_delegations_does_not_create_false_edges(self):
+        # Some CZDS zones, including .biz, place apex records between
+        # the sorted child records and the final duplicated SOA.
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 2026102101 2 3 4 5",
+            "0--0.biz.\t3600\tIN\tNS\tNS1.EXAMPLE.NET.",
+            "zzz.biz.\t3600\tIN\tNS\txn--ns-nt3n.rackspace.com.",
+            "biz.\t3600\tIN\tNSEC3PARAM\t1 0 0 -",
+            "biz.\t3600\tIN\tDNSKEY\t257 3 8 AQAB",
+            "biz.\t3600\tIN\tNS\tns.biz.",
+            "biz.\t3600\tIN\tRRSIG\tNS 8 1 3600 20261025000000 20261021000000 1 biz. AA==",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 2026102101 2 3 4 5",
+        )
+        result = MOD.process_zone_stream(stream, "biz-fixture", (), aggregate)
+        self.assertEqual(
+            sorted(aggregate.values),
+            ["ns1.example.net", "xn--ns-nt3n.rackspace.com"],
+        )
+        self.assertEqual(result["delegated_names"], 2)
+        self.assertEqual(result["delegation_edges"], 2)
+        self.assertEqual(result["zone"], "biz")
+        self.assertEqual(result["soa_serial"], "2026102101")
+
+    def test_interleaved_apex_records_do_not_disable_child_owner_ordering(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "z.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "biz.\t3600\tIN\tDNSKEY\t257 3 8 AQAB",
+            "a.biz.\t3600\tIN\tNS\tns2.example.net.",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+        )
+        with self.assertRaisesRegex(ValueError, "records are not ordered by owner"):
+            MOD.process_zone_stream(stream, "biz-fixture", (), aggregate)
+
+    def test_no_records_allowed_after_closing_soa_even_if_apex(self):
+        aggregate = DummyAggregate()
+        stream = zone(
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "a.biz.\t3600\tIN\tNS\tns1.example.net.",
+            "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
+            "biz.\t3600\tIN\tDNSKEY\t257 3 8 AQAB",
+        )
+        with self.assertRaisesRegex(ValueError, "records appear after final SOA"):
+            MOD.process_zone_stream(stream, "biz-fixture", (), aggregate)
 
     def test_out_of_order_owner_is_rejected(self):
         aggregate = DummyAggregate()

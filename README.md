@@ -303,10 +303,18 @@ Old raw zone directories are pruned only after successful publication. Private a
 Given an already downloaded CZDS directory with the generated `manifest.json`:
 
 ```sh
-python3 scripts/fetch_special_zones.py --output state/special-zones.txt
-python3 scripts/build_nsdb.py --zones-dir state/zones/2026-10-21 --special-zones state/special-zones.txt --private-counts private/2026-10-21/nameserver-counts.txt --coverage private/2026-10-21/coverage.txt --counts private/2026-10-21/counts.txt
+python3 scripts/build_nsdb.py --zones-dir state/zones/2026-10-21 --special-zones config/locally-served-dns-zones.txt --private-counts private/2026-10-21/nameserver-counts.txt --coverage private/2026-10-21/coverage.txt --counts private/2026-10-21/counts.txt
 python3 scripts/publish_nsdb.py --current-private private/2026-10-21/nameserver-counts.txt --current-full-counts private/2026-10-21/counts.txt --current-coverage private/2026-10-21/coverage.txt --k "$(cat config/k.txt)" --current-tag nsdb-2026-10-21 --out dist
 ```
+
+To check whether IANA changed the authoritative locally-served registry without changing release semantics directly:
+
+```sh
+python3 scripts/fetch_special_zones.py --output /tmp/locally-served-dns-zones.txt
+diff -u config/locally-served-dns-zones.txt /tmp/locally-served-dns-zones.txt
+```
+
+The scheduled `refresh-iana.yml` workflow automates that comparison and opens a pull request when the normalized registry changes.
 
 For consecutive builds, pass the previous public snapshot, coverage, full counts, and retained private counts to `publish_nsdb.py`; the workflow shows the complete invocation.
 

@@ -26,6 +26,8 @@ The build uses:
 - ICANN reference API clients: `https://github.com/icann/czds-api-client-python`
 - IANA Locally-Served DNS Zones: `https://www.iana.org/assignments/locally-served-dns-zones/locally-served-dns-zones.txt`
 
+The normalized IANA exclusion registry used by releases is pinned in [`config/locally-served-dns-zones.txt`](config/locally-served-dns-zones.txt). Daily releases never change exclusion semantics by fetching IANA live. A separate weekly workflow regenerates the normalized file and opens or updates a pull request only when the authoritative registry changes, so semantic changes are reviewed before merge.
+
 CZDS access is authenticated and subject to the applicable zone-file access agreements. Each zone file may be downloaded no more than once per 24-hour period. Raw zone data is kept outside this repository on a protected self-hosted runner and is never uploaded as a release artifact.
 
 ## Delegation counting
@@ -212,6 +214,12 @@ Each daily release contains:
 | `changes-counts.txt` | Full aggregate change totals and public threshold transitions |
 | `SHA256SUMS` | SHA-256 checksums for all published artifacts |
 
+The release workflow also creates a GitHub Artifact Attestation for the complete `dist/*` payload using `actions/attest@v4`. This binds each released file digest to the official GitHub Actions workflow through signed SLSA provenance. Downstream users can verify an artifact with the GitHub CLI:
+
+```sh
+gh attestation verify nameservers.txt.gz --repo soft-cloud-dev/nsdb
+```
+
 Release tags use:
 
 ```text
@@ -253,7 +261,7 @@ The state directory must be accessible only to the runner account.
 The workflow performs:
 
 ```text
-IANA locally-served zones
+pinned IANA locally-served zones
         +
 ICANN CZDS zone files
         |

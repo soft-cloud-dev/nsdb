@@ -77,6 +77,8 @@ def main():
             raise SystemExit("first release must use previous=none")
         if diff_meta.get("previous_k") != "none" or diff_meta.get("previous_visibility_k") != "none":
             raise SystemExit("first release cannot have previous threshold metadata")
+        if diff_meta.get("k") != str(cur_k) or crossings_meta.get("k") != str(cur_k):
+            raise SystemExit("first release threshold metadata differs from snapshot")
         if diff_meta.get("public_verifiable") != "true":
             raise SystemExit("first release must be marked public_verifiable=true")
         if actual_diff or actual_crossings:

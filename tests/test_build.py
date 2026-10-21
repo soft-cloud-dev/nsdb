@@ -122,7 +122,7 @@ class BuildTests(unittest.TestCase):
             "a.biz.\t3600\tIN\tNS\tns2.example.net.",
             "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
         )
-        with self.assertRaisesRegex(ValueError, "records are not ordered by owner"):
+        with self.assertRaisesRegex(ValueError, "NS delegation owners violate both"):
             MOD.process_zone_stream(stream, "biz-fixture", (), aggregate)
 
     def test_no_records_allowed_after_closing_soa_even_if_apex(self):
@@ -203,9 +203,9 @@ class BuildTests(unittest.TestCase):
             "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
             # First pair is plain-increasing, canonical-decreasing.
             "a.ns1.biz.\t3600\tIN\tNS\tns1.example.net.",
-            "b.biz.\t3600\tIN\tNS\tns2.example.net.",
+            "ns1.biz-news.biz.\t3600\tIN\tNS\tns2.example.net.",
             # Second pair is plain-decreasing, canonical-increasing.
-            "a.biz.\t3600\tIN\tNS\tns3.example.net.",
+            "ns1.biz.\t3600\tIN\tNS\tns3.example.net.",
             "biz.\t3600\tIN\tSOA\tns.biz. hostmaster.biz. 1 2 3 4 5",
         )
         with self.assertRaisesRegex(ValueError, "NS delegation owners violate both"):

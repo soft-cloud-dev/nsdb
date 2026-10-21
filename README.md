@@ -36,12 +36,14 @@ For each zone, the build:
 
 1. validates the first and final SOA records;
 2. validates record ordering needed for streaming owner-group processing;
-3. ignores apex NS records because they describe the TLD itself rather than child delegations;
-4. groups NS records by delegation owner;
-5. deduplicates nameserver targets inside each owner RRset;
-6. excludes delegation owners and nameserver targets under IANA locally-served zones;
-7. increments each retained nameserver once per unique delegated owner;
-8. merges per-zone counts into a disk-backed SQLite aggregate.
+3. canonicalizes owner names and NS targets to lowercase ASCII A-label form and removes the trailing root dot;
+4. ignores apex NS records because they describe the TLD itself rather than child delegations;
+5. groups NS records by delegation owner;
+6. deduplicates nameserver targets inside each owner RRset after canonicalization;
+7. rejects empty/root NS targets and non-ASCII U-label input rather than silently transforming it;
+8. excludes delegation owners and nameserver targets under IANA locally-served zones using DNS-label-aware suffix matching;
+9. increments each retained nameserver once per unique delegated owner;
+10. merges per-zone counts into a disk-backed SQLite aggregate.
 
 The exact aggregate is private build state. Publication thresholding happens only after aggregation.
 
@@ -132,15 +134,29 @@ Every snapshot and diff includes `k` metadata.
 
 If `k` is raised, the comparison evaluates both days using the new threshold. This remains publicly verifiable because all newly hidden rows were present in the previous snapshot with exact values.
 
-If `k` is lowered, yesterday's public snapshot does not contain nameservers that were below the old threshold but above the new one. The build therefore requires retained private counts for the previous day and marks:
+If `k` is lowered, yesterday's public snapshot does not contain nameservers that were below the old threshold but above the new one. The build therefore **does not** use yesterday's private exact count to fill that gap, because doing so would retroactively disclose a value hidden by the old publication contract.
+
+Instead, the previous side remains expressed at the old threshold. For example, lowering from `10` to `5` may produce:
+
+```text
+# previous_k=10
+# k=5
+# comparison_mode=k-lowered
+ns.example|<10|8|NA
+```
+
+It must never produce `ns.example|7|8|+1` if the value `7` was not public yesterday.
+
+Such a release is marked:
 
 ```text
 k_changed=true
+comparison_mode=k-lowered
 comparison_break=true
 public_verifiable=false
 ```
 
-Lowering `k` is treated as a comparison-boundary event similar to a coverage change.
+Lowering `k` is therefore treated as a comparison-boundary event similar to a coverage change. Rows still describe the transition between the two public visibility contracts, but they must not be interpreted as a same-threshold day-over-day measurement.
 
 No hysteresis is used. Visibility depends only on `(count, k)` for that day, so nameservers near the threshold may legitimately oscillate between visible and hidden states.
 
@@ -211,7 +227,7 @@ A persistent runner is deliberate:
 - CZDS data can be large;
 - authenticated zone files must not be exposed as public workflow artifacts;
 - same-day workflow reruns must reuse already downloaded zone files instead of downloading them a second time;
-- retained private nameserver counts are required if the publication threshold is ever lowered.
+- retained private aggregates support auditing, threshold-distribution analysis, and reproducible rebuilds without changing the public disclosure contract.
 
 Configure repository secrets:
 
@@ -285,6 +301,24 @@ python3 scripts/publish_nsdb.py --current-private private/2026-10-21/nameserver-
 ```
 
 For consecutive builds, pass the previous public snapshot, coverage, full counts, and retained private counts to `publish_nsdb.py`; the workflow shows the complete invocation.
+
+## Privacy threat model
+
+The threshold prevents direct publication of an individual nameserver count below `k`; it is **not** differential privacy and does not make visible nameservers anonymous.
+
+The exact global totals in `counts.txt` and `changes-counts.txt` are computed over the complete private aggregate. Those totals can reveal aggregate movement in the suppressed tail. In unusually sparse change scenarios, external knowledge plus global totals may narrow the possible movement of one or more hidden nameservers.
+
+This is an explicit trade-off in the current data contract: exact global totals are retained for measurement and auditability. Consumers must not interpret `k` as a formal reconstruction-resistance guarantee. If stronger privacy becomes a requirement, the global totals should be removed, coarsely bucketed, or released under a formally specified noise mechanism; changing that policy would be a versioned publication-contract change.
+
+The IANA exclusion source used here is specifically the **Locally-Served DNS Zones** registry. It is not the complete IANA Special-Use Domain Names registry. Names such as `.local` or `.test` must not be silently added to this exclusion set unless an additional authoritative source and explicit policy are introduced.
+
+## Performance model
+
+Compressed CZDS inputs are parsed as streams and are not expanded to uncompressed copies on disk. Download progress is checkpointed after every successfully persisted zone file, so a later build retry reuses completed downloads and does not intentionally re-fetch them.
+
+The aggregate database is a throwaway, single-writer SQLite database whose source zone files remain available for rebuild. The current `journal_mode=OFF` / `synchronous=OFF` choice favors sequential build speed over crash recovery of that temporary database. Switching to WAL, adding a large fixed cache, external merge-sort aggregation, or SOA-based per-zone reuse should be driven by benchmarks from the production CZDS workload rather than assumed to be faster.
+
+SOA-based skip-unchanged processing requires retaining each zone's private nameserver contribution, not only its coverage row, so it is intentionally not implemented as a superficial serial check.
 
 ## Security and publication boundary
 

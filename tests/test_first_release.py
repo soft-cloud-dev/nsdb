@@ -143,8 +143,17 @@ class InitialReleaseTests(unittest.TestCase):
     def test_release_payload_checksum_and_attestation_input(self):
         with tempfile.TemporaryDirectory() as temp:
             out = pathlib.Path(temp)
+            metadata = {
+                "nameservers.txt": "# k=5\n# coverage_complete=true\n# excluded_zones=none\n",
+                "coverage.txt": "# coverage_complete=true\n# excluded_zones=none\n",
+                "delegation-changes.txt": "# coverage_complete=true\n# excluded_zones=none\n",
+                "nameserver-changes.txt": "# coverage_complete=true\n# excluded_zones=none\n",
+                "counts.txt": "coverage_complete=true\nexcluded_zones=none\n",
+                "changes-counts.txt": "coverage_complete=true\nexcluded_zones=none\n",
+            }
             for name in ASSETS.ARTIFACTS:
-                (out / name).write_bytes(b"public\n")
+                (out / name).write_text(metadata.get(name, "public\n"), encoding="utf-8")
+            original_snapshot = (out / "nameservers.txt").read_bytes()
             for name, compressed in ASSETS.GZIP_PAIRS:
                 with (out / compressed).open("wb") as raw:
                     with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as stream:
@@ -158,7 +167,7 @@ class InitialReleaseTests(unittest.TestCase):
             (out / "nameservers.txt").write_text("tampered\n")
             with self.assertRaisesRegex(ValueError, "SHA-256 mismatch"):
                 ASSETS.verify(out)
-            (out / "nameservers.txt").write_text("public\n")
+            (out / "nameservers.txt").write_bytes(original_snapshot)
             (out / "private-counts.txt").write_text("secret\n")
             with self.assertRaisesRegex(ValueError, "allowlist"):
                 ASSETS.verify(out)

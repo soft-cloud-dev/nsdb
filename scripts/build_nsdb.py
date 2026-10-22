@@ -10,7 +10,31 @@ from pathlib import Path
 
 
 # These fixed codes may appear in public CI logs; exception messages may not.
-_PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling","dns_escape_decimal_range","dns_label_empty","dns_label_too_long","dns_name_too_long","dns_label_non_ascii","ns_target_empty","ns_rdata_extra","ns_target_escape_dangling","ns_target_root","record_blank","record_fields","header_record_fields","apex_hint_missing","apex_hint_unavailable","after_final_soa","soa_owner_class","soa_serial_invalid","soa_serial_mismatch","soa_excess","ns_owner_outside_apex","ns_owner_order","zone_empty","soa_missing","soa_final_missing","archive_empty","archive_member_unreadable"])
+_PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling","dns_escape_decimal_range","dns_label_empty","dns_label_too_long","dns_name_too_long","dns_label_non_ascii","ns_target_empty","ns_rdata_extra","ns_target_escape_dangling","ns_target_root","record_blank","record_fields","header_record_fields","apex_hint_missing","apex_hint_unavailable","after_final_soa","soa_owner_class","soa_serial_invalid","soa_serial_mismatch","soa_excess","ns_owner_outside_apex","ns_owner_order","zone_empty","soa_missing","soa_final_missing","archive_empty","archive_member_unreadable","record_fields_comment","record_fields_directive","record_fields_space_delimited","record_fields_missing_tabs","record_fields_partial_tabs","record_fields_mixed_delimiters"])
+
+
+def classify_record_fields(line: str) -> str:
+    """Fixed structural diagnostic only; never expose private record data.
+
+    This is deliberately not a record parser. Every malformed record is
+    still rejected; these heuristics identify the probable input shape.
+    """
+    if not line.strip():
+        return "record_blank"
+    stripped = line.lstrip()
+    if stripped.startswith((";", "#")):
+        return "record_fields_comment"
+    if stripped.startswith("$"):
+        return "record_fields_directive"
+    tabs = line.count("\t")
+    if tabs == 0:
+        if any(char in line for char in " \v\f"):
+            return "record_fields_space_delimited"
+        return "record_fields_missing_tabs"
+    if any(char in line for char in " \v\f"):
+        return "record_fields_mixed_delimiters"
+    return "record_fields_partial_tabs"
+
 
 
 class ZoneValidationError(ValueError):
@@ -318,7 +342,7 @@ def process_zone_stream(
             raise ZoneValidationError("record_blank", f"{label}: blank line violates CZDS zone format")
         fields = line.split("\t", 4)
         if len(fields) != 5:
-            raise ZoneValidationError("record_fields", f"{label}: expected five tab-separated fields at record {records + 1}")
+            raise ZoneValidationError(classify_record_fields(line), f"{label}: expected five tab-separated fields at record {records + 1}")
         owner_raw, ttl, rrclass, rrtype, rdata = fields
         owner = normalize_name(owner_raw)
         rrclass = rrclass.lower()

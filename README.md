@@ -312,11 +312,24 @@ python scripts/preflight_czds.py \
 
 On validation failure, public logs now include a fixed `reason=<code>`, for example
 `reason=soa_serial_mismatch`, `reason=ns_owner_order`, or
-`reason=record_fields`. The code is selected by the production parser;
-neither the offending record, owner, NS target, SOA serial, record offset, nor
-the exception's original message is printed. Unexpected errors become
-`reason=unclassified_error`. Both preflight and the production CLI use
-the same error taxonomy, and all validation gates remain fail-closed.
+`reason=record_fields_partial_tabs`. A record that does not split into five tab-separated fields
+is now classified by its *structure*:
+
+- `record_fields_comment`: leading semicolon or hash (comment-like syntax; validity not inferred)
+- `record_fields_directive`: leading dollar sign (possible master-file directive)
+- `record_fields_space_delimited`: whitespace present but no tab (candidate only)
+- `record_fields_missing_tabs`: no tabs or whitespace
+- `record_fields_partial_tabs`: one to three tabs, without other whitespace
+- `record_fields_mixed_delimiters`: tabs mixed with spaces or other horizontal whitespace
+- `record_blank`: empty record
+
+These diagnostics apply to both the first record and later records. They
+describe the record's shape, **not** whether a different zone-file grammar
+should be accepted. Neither the offending record, owner, NS target, SOA serial,
+record offset, nor the exception's original message is printed. Unexpected
+errors become `reason=unclassified_error`. Both preflight and full
+aggregation use the same classification without changing parsing acceptance,
+delegation deduplication, DNS ordering, or SOA consistency.
 
 **Troubleshooting licensed inputs:** Run the normal daily-release workflow
 only on the protected runner. If preflight fails, use its reason code to

@@ -284,6 +284,44 @@ def infer_apex_from_filename(filename: str) -> str | None:
     return None
 
 
+def select_zone_inputs(
+    zones_dir: Path, excluded_zones: tuple[str, ...] = ()
+) -> tuple[list[Path], tuple[str, ...]]:
+    """Apply exact, explicit exclusions to the unchanged CZDS download manifest.
+
+    All manifest entries must still exist; only a known temporary exception
+    can be omitted from parsing. Preflight and aggregation call this same
+    selector to prevent disagreement about coverage.
+    """
+    requested = set(excluded_zones)
+    if requested - {"gov"}:
+        raise ValueError("unsupported CZDS zone exclusion")
+    manifest = json.loads((zones_dir / "manifest.json").read_text(encoding="utf-8"))
+    entries = manifest.get("files", [])
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("CZDS manifest contains no files")
+    selected = []
+    found = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("malformed CZDS manifest entry")
+        filename = entry.get("filename")
+        if not isinstance(filename, str) or not filename or Path(filename).name != filename:
+            raise ValueError("CZDS manifest filename must be a basename")
+        path = zones_dir / filename
+        if path.is_symlink() or not path.is_file():
+            raise ValueError("CZDS manifest references missing or nonregular file")
+        if infer_apex_from_filename(filename) in requested:
+            found.add(infer_apex_from_filename(filename))
+        else:
+            selected.append(path)
+    if requested != found:
+        raise ValueError("requested CZDS exclusion was not found in manifest")
+    if not selected:
+        raise ValueError("no CZDS zones remain after exclusion")
+    return sorted(selected), tuple(sorted(found))
+
+
 def process_zone_stream(
     stream,
     label: str,
@@ -493,19 +531,12 @@ def main():
     p.add_argument("--private-counts", required=True, type=Path)
     p.add_argument("--coverage", required=True, type=Path)
     p.add_argument("--counts", required=True, type=Path)
+    p.add_argument("--exclude-zone", choices=("gov",), action="append", default=[])
     args = p.parse_args()
 
-    manifest_path = args.zones_dir / "manifest.json"
-    if not manifest_path.exists():
-        raise SystemExit(f"missing {manifest_path}")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    files = [args.zones_dir / item["filename"] for item in manifest.get("files", [])]
-    if not files:
-        raise SystemExit("zone manifest is empty")
-
-    for path in files:
-        if not path.is_file():
-            raise SystemExit(f"zone file missing: {path}")
+    files, excluded = select_zone_inputs(args.zones_dir, tuple(args.exclude_zone))
+    coverage_complete = "false" if excluded else "true"
+    excluded_text = ",".join(excluded) if excluded else "none"
 
     args.private_counts.parent.mkdir(parents=True, exist_ok=True)
     args.coverage.parent.mkdir(parents=True, exist_ok=True)
@@ -541,6 +572,8 @@ def main():
 
     with open(args.coverage, "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# format=zone|soa_serial|records|delegated_names|delegation_edges\n")
+        fh.write(f"# coverage_complete={coverage_complete}\n")
+        fh.write(f"# excluded_zones={excluded_text}\n")
         for row in coverage:
             fh.write(
                 f"{row['zone']}|{row['soa_serial']}|{row['records']}|"
@@ -548,6 +581,8 @@ def main():
             )
 
     with open(args.counts, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"coverage_complete={coverage_complete}\n")
+        fh.write(f"excluded_zones={excluded_text}\n")
         fh.write(f"zones={len(coverage)}\n")
         fh.write(f"delegated_names={delegated_names}\n")
         fh.write(f"delegation_edges={delegation_edges}\n")

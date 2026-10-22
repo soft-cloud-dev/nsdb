@@ -312,14 +312,15 @@ python scripts/preflight_czds.py \
 
 On validation failure, public logs now include a fixed `reason=<code>`, for example
 `reason=soa_serial_mismatch`, `reason=ns_owner_order`, or
-`reason=record_fields_partial_tabs`. A record without four tab separators
+`reason=record_fields_partial_tabs`. A record that does not split into five tab-separated fields
 is now classified by its *structure*:
 
-- `record_fields_comment`: leading semicolon (possible DNS master-file comment)
+- `record_fields_comment`: leading semicolon or hash (comment-like syntax; validity not inferred)
 - `record_fields_directive`: leading dollar sign (possible master-file directive)
 - `record_fields_space_delimited`: whitespace present but no tab (candidate only)
 - `record_fields_missing_tabs`: no tabs or whitespace
-- `record_fields_partial_tabs`: one to three tabs
+- `record_fields_partial_tabs`: one to three tabs, without other whitespace
+- `record_fields_mixed_delimiters`: tabs mixed with spaces or other horizontal whitespace
 - `record_blank`: empty record
 
 These diagnostics apply to both the first record and later records. They

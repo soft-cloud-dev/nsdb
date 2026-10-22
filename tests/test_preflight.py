@@ -13,7 +13,7 @@ SCRIPT = ROOT / "scripts" / "preflight_czds.py"
 
 class PreflightTests(unittest.TestCase):
     @staticmethod
-    def invoke(directory: pathlib.Path) -> subprocess.CompletedProcess:
+    def invoke(directory: pathlib.Path, *extra: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [
                 sys.executable,
@@ -22,6 +22,7 @@ class PreflightTests(unittest.TestCase):
                 str(directory / "zones"),
                 "--special-zones",
                 str(directory / "special-zones.txt"),
+                *extra,
             ],
             capture_output=True,
             text=True,
@@ -29,7 +30,7 @@ class PreflightTests(unittest.TestCase):
         )
 
     @staticmethod
-    def invoke_build(directory: pathlib.Path) -> subprocess.CompletedProcess:
+    def invoke_build(directory: pathlib.Path, *extra: str) -> subprocess.CompletedProcess:
         return subprocess.run(
             [
                 sys.executable,
@@ -44,6 +45,7 @@ class PreflightTests(unittest.TestCase):
                 str(directory / "coverage.txt"),
                 "--counts",
                 str(directory / "counts.txt"),
+                *extra,
             ],
             capture_output=True,
             text=True,
@@ -60,6 +62,113 @@ class PreflightTests(unittest.TestCase):
         )
         with gzip.open(zones / filename, "wt", encoding="utf-8") as out:
             out.write("\n".join(records) + "\n")
+
+    @staticmethod
+    def setup_many(directory: pathlib.Path, by_filename: dict[str, list[str]]) -> None:
+        zones = directory / "zones"
+        zones.mkdir()
+        (directory / "special-zones.txt").write_text("home.arpa\n", encoding="utf-8")
+        (zones / "manifest.json").write_text(
+            json.dumps({"files": [{"filename": name} for name in sorted(by_filename)]}),
+            encoding="utf-8",
+        )
+        for filename, records in by_filename.items():
+            with gzip.open(zones / filename, "wt", encoding="utf-8") as out:
+                out.write("\n".join(records) + "\n")
+
+    def test_temporary_gov_exclusion_is_exact_and_both_stages_match(self):
+        gov = [
+            "gov.\t3600\tIN\tNS\tns.gov.",
+            "confidential.gov. 3600 IN NS ns.secret.example.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+        ]
+        example = [
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 11 2 3 4 5",
+            "child.example.\t3600\tIN\tNS\tns1.example.net.",
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 11 2 3 4 5",
+        ]
+        govuk = [
+            "govuk.\t3600\tIN\tSOA\tns.govuk. hostmaster.govuk. 12 2 3 4 5",
+            "child.govuk.\t3600\tIN\tNS\tns2.example.net.",
+            "govuk.\t3600\tIN\tSOA\tns.govuk. hostmaster.govuk. 12 2 3 4 5",
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.setup_many(root, {
+                "gov.txt.gz": gov, "example.txt.gz": example, "govuk.txt.gz": govuk
+            })
+            manifest = (root / "zones" / "manifest.json").read_bytes()
+            original_gov = (root / "zones" / "gov.txt.gz").read_bytes()
+            extra = ("--exclude-zone", "gov")
+            for invocation in (self.invoke, self.invoke_build):
+                failed = invocation(root)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn("reason=record_fields_space_delimited", failed.stderr)
+                self.assertNotIn("confidential.gov.", failed.stdout + failed.stderr)
+            preflight = self.invoke(root, *extra)
+            full = self.invoke_build(root, *extra)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            self.assertEqual(full.returncode, 0, full.stderr)
+            self.assertIn("Temporary CZDS exclusion: gov", preflight.stdout)
+            coverage = (root / "coverage.txt").read_text(encoding="utf-8")
+            counts = (root / "counts.txt").read_text(encoding="utf-8")
+            self.assertIn("# coverage_complete=false", coverage)
+            self.assertIn("# excluded_zones=gov", coverage)
+            self.assertIn("coverage_complete=false", counts)
+            self.assertIn("excluded_zones=gov", counts)
+            self.assertIn("zones=2", counts)
+            self.assertIn("example|", coverage)
+            self.assertIn("govuk|", coverage)
+            self.assertNotIn("\ngov|", coverage)
+            self.assertEqual((root / "zones" / "manifest.json").read_bytes(), manifest)
+            self.assertEqual((root / "zones" / "gov.txt.gz").read_bytes(), original_gov)
+            private = (root / "private-counts.txt").read_text(encoding="utf-8")
+            self.assertIn("ns1.example.net|1", private)
+            self.assertIn("ns2.example.net|1", private)
+            self.assertNotIn("ns.secret.example", private)
+
+    def test_exclusion_fails_if_requested_zone_missing_or_is_only_zone(self):
+        valid = [
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+            "a.example.\t3600\tIN\tNS\tns1.example.net.",
+            "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+        ]
+        for filenames in ({"example.txt.gz": valid}, {
+            "gov.txt.gz": [
+                "gov.\t3600\tIN\tNS\tns.gov.",
+                "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 1 2 3 4 5",
+            ],
+        }):
+            with self.subTest(names=tuple(filenames)), tempfile.TemporaryDirectory() as tmp:
+                root = pathlib.Path(tmp)
+                self.setup_many(root, filenames)
+                for invocation in (self.invoke, self.invoke_build):
+                    failed = invocation(root, "--exclude-zone", "gov")
+                    self.assertNotEqual(failed.returncode, 0)
+                    self.assertFalse((root / "counts.txt").exists())
+                    self.assertNotIn("ns1.example.net", failed.stdout + failed.stderr)
+                    unsupported = invocation(root, "--exclude-zone", "com")
+                    self.assertNotEqual(unsupported.returncode, 0)
+
+    def test_exclusion_never_hides_other_malformed_zones(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            self.setup_many(root, {
+                "gov.txt.gz": [
+                    "gov.\t3600\tIN\tNS\tns.gov.",
+                    "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 1 2 3 4 5",
+                ],
+                "example.txt.gz": [
+                    "example.\t3600\tIN\tNS\tns.example.",
+                    "private.example. 3600 IN NS ns.secret.example.",
+                    "example.\t3600\tIN\tSOA\tns.example. hostmaster.example. 1 2 3 4 5",
+                ],
+            })
+            for invocation in (self.invoke, self.invoke_build):
+                failed = invocation(root, "--exclude-zone", "gov")
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn("reason=record_fields_space_delimited", failed.stderr)
+                self.assertNotIn("private.example.", failed.stdout + failed.stderr)
 
     def test_nonleading_soa_is_validated_without_private_output(self):
         with tempfile.TemporaryDirectory() as d:

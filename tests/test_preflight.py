@@ -121,7 +121,10 @@ class PreflightTests(unittest.TestCase):
             ],
             "record_fields_missing_tabs": [initial, "private-name.gov.", soa],
             "record_fields_partial_tabs": [
-                initial, "private-name.gov.\t3600\tIN NS ns.hidden.example.", soa
+                initial, "private-name.gov.\t3600\tIN\tNS", soa
+            ],
+            "record_fields_mixed_delimiters": [
+                initial, "private-name.gov.\t3600 IN NS ns.hidden.example.", soa
             ],
             "soa_missing": [initial, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."],
             "soa_final_missing": [
@@ -181,7 +184,8 @@ class PreflightTests(unittest.TestCase):
             "record_fields_directive": "$TTL 3600",
             "record_fields_space_delimited": "private-name.gov. 3600 IN NS ns.hidden.example.",
             "record_fields_missing_tabs": "private-name.gov.",
-            "record_fields_partial_tabs": "private-name.gov.\t3600\tIN NS ns.hidden.example.",
+            "record_fields_partial_tabs": "private-name.gov.\t3600\tIN\tNS",
+            "record_fields_mixed_delimiters": "private-name.gov.\t3600 IN NS ns.hidden.example.",
         }
         final = "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"
         for reason, first in cases.items():

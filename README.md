@@ -42,7 +42,7 @@ CZDS zone files use the standardized master-file subformat defined by ICANN: one
 
 For each zone, the build:
 
-1. validates the first and final SOA records;
+1. validates the zone apex and SOA record(s), including the final SOA; when an SOA is not the first record, it uses the trusted CZDS filename as the apex hint and still fails closed if the SOA is missing or inconsistent;
 2. validates record ordering needed for streaming owner-group processing;
 3. parses RFC 1035 master-file escapes, validates DNS wire-length limits, validates `xn--` A-labels, canonicalizes owner names and NS targets to lowercase ASCII representation, and removes the trailing root dot;
 4. ignores apex NS records because they describe the TLD itself rather than child delegations;
@@ -295,6 +295,22 @@ independent public verification
         v
 SHA256SUMS + GitHub Release
 ```
+
+## Preflight for non-leading SOA zones
+
+Legacy and nonstandard CZDS archives can begin with apex NS or other records rather than SOA. The build accepts such input only if the file has a recognizable CZDS zone filename and a valid apex SOA at the end (or a matching earlier SOA plus the closing copy). A missing SOA, mismatched SOA serial, wrong SOA owner, or out-of-zone NS delegation still fails the build.
+
+Before the expensive full aggregation, `scripts/preflight_czds.py` reads each archive's first record and **fully validates only files without a leading SOA**, using a discard-only nameserver sink. This avoids a multi-hour rebuild failing late on another non-leading SOA format issue. It emits file names and pass/fail status only, not licensed domain-to-nameserver relationships.
+
+On the protected self-hosted runner, the exceptional-zone preflight can also be run independently against the already downloaded CZDS dataset:
+
+```sh
+python scripts/preflight_czds.py \
+  --zones-dir "$NSDB_STATE_DIR/zones/2026-10-21" \
+  --special-zones config/locally-served-dns-zones.txt
+```
+
+Normal first-SOA archives are not fully re-parsed during this preflight. A passing preflight therefore does **not** certify the entire CZDS dataset, and the full build remains mandatory. The current aggregation uses an ephemeral global SQLite database, so a failed run reprocesses earlier zones; per-zone private checkpoints are a separate future reliability improvement.
 
 ## Same-day reruns
 

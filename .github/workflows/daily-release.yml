@@ -26,6 +26,7 @@ jobs:
       ICANN_USERNAME: ${{ secrets.ICANN_USERNAME }}
       ICANN_PASSWORD: ${{ secrets.ICANN_PASSWORD }}
       NSDB_STATE_DIR: ${{ vars.NSDB_STATE_DIR || '/var/lib/nsdb' }}
+      NSDB_TEMP_EXCLUDE_ZONE: gov
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -69,7 +70,8 @@ jobs:
         run: |
           python scripts/preflight_czds.py \
             --zones-dir "$NSDB_STATE_DIR/zones/$DAY" \
-            --special-zones config/locally-served-dns-zones.txt
+            --special-zones config/locally-served-dns-zones.txt \
+            --exclude-zone "$NSDB_TEMP_EXCLUDE_ZONE"
 
       - name: Build private exact aggregate
         env:
@@ -78,6 +80,7 @@ jobs:
           python scripts/build_nsdb.py \
             --zones-dir "$NSDB_STATE_DIR/zones/$DAY" \
             --special-zones config/locally-served-dns-zones.txt \
+            --exclude-zone "$NSDB_TEMP_EXCLUDE_ZONE" \
             --private-counts "$NSDB_STATE_DIR/private/$DAY/nameserver-counts.txt" \
             --coverage "$NSDB_STATE_DIR/private/$DAY/coverage.txt" \
             --counts "$NSDB_STATE_DIR/private/$DAY/counts.txt"
@@ -194,10 +197,29 @@ jobs:
           DAY: ${{ steps.date.outputs.day }}
           PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
         run: |
+          COVERAGE_STATUS="$(sed -n 's/^coverage_complete=//p' dist/counts.txt)"
+          EXCLUDED_ZONES="$(sed -n 's/^excluded_zones=//p' dist/counts.txt)"
+          case "$COVERAGE_STATUS:$EXCLUDED_ZONES" in
+            true:none)
+              RELEASE_TITLE="NSDB snapshot $DAY"
+              COVERAGE_LABEL="Complete approved CZDS manifest"
+              ;;
+            false:gov)
+              RELEASE_TITLE="NSDB snapshot $DAY (PARTIAL: .gov excluded)"
+              COVERAGE_LABEL="PARTIAL - .gov excluded"
+              ;;
+            *)
+              echo "Invalid release coverage metadata" >&2
+              exit 1
+              ;;
+          esac
+
           NOTES="$(cat <<EOF
           Daily ICANN CZDS nameserver delegation aggregate.
 
           UTC snapshot date: $DAY
+          Coverage: $COVERAGE_LABEL
+          Excluded zones: $EXCLUDED_ZONES
           Compared with: $PREVIOUS_TAG
 
           Snapshot counts:
@@ -209,11 +231,11 @@ jobs:
           )"
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --notes "$NOTES"
+            gh release edit "$TAG" --title "$RELEASE_TITLE" --notes "$NOTES"
             gh release upload "$TAG" dist/* --clobber
           else
             gh release create "$TAG" dist/* \
-              --title "NSDB snapshot $DAY" \
+              --title "$RELEASE_TITLE" \
               --notes "$NOTES"
           fi
 

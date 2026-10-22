@@ -184,6 +184,11 @@ coverage_changed=true
 comparison_break=true
 ```
 
+When a zone is intentionally excluded, each public release artifact includes
+the `coverage_complete=false` and `excluded_zones=gov` status, regardless
+of whether a prior release exists. Such comparisons are conservatively marked
+`comparison_break=true` even if both releases omit the same zone.
+
 This distinguishes nameserver movement from changes caused by CZDS access or source coverage.
 
 ## Aggregate counts
@@ -344,6 +349,41 @@ should retain the shared `process_input` semantics and include its parser
 source digest in cache invalidation.
 
 Normal first-SOA archives are not fully re-parsed during this preflight. A passing preflight therefore does **not** certify the entire CZDS dataset, and the full build remains mandatory. The current aggregation uses an ephemeral global SQLite database, so a failed run reprocesses earlier zones; per-zone private checkpoints are a separate future reliability improvement.
+
+## Temporary .gov omission (partial-coverage releases)
+
+**As of October 22, 2026**, protected `gov.txt.gz` fails the strict CZDS record
+structure check. Until the defect is understood, the daily-release workflow
+passes `--exclude-zone gov` to **both** preflight and private aggregation
+through the pinned `NSDB_TEMP_EXCLUDE_ZONE=gov` setting. This is an
+explicit, temporary exception tracked by [issue #11](https://github.com/soft-cloud-dev/nsdb/issues/11).
+No other zone may be excluded by this option.
+
+The approved download manifest and raw, licensed zone files are **not**
+modified, deleted or republished. The selector requires that `gov` be
+present in that manifest and that at least one other zone remain; it still
+checks the existence of every manifest file, including the excluded one.
+All included zones undergo their normal SOA, DNS ordering and deduplication
+validation. Failing included zones continue to block publication.
+
+Private `counts.txt` and `coverage.txt`, and the public snapshot,
+coverage, diffs and summary counts are explicitly labeled with
+`coverage_complete=false` and `excluded_zones=gov`. The term
+`coverage_complete` refers only to intentional exclusions from the
+**approved CZDS download manifest**, not to all Internet TLDs. Partial
+releases display `PARTIAL: .gov excluded` in the release title and notes;
+`comparison_break=true` remains set while either compared snapshot has
+partial coverage. A restored `.gov` release changes the coverage set and
+is explicitly flagged with `coverage_changed=true`.
+
+The CLI defaults to **no exclusions**. For a protected, manual partial run,
+pass `--exclude-zone gov` to both `scripts/preflight_czds.py` and
+`scripts/build_nsdb.py`. Passing any other zone, requesting `gov` when
+it is missing, or excluding the sole manifest entry fails closed. Remove
+both workflow arguments and the pinned environment setting after the
+protected .gov input is validated; [issue #11](https://github.com/soft-cloud-dev/nsdb/issues/11)
+tracks the restoration and its regression tests. This mechanism does **not**
+fix or silently accept the malformed .gov source.
 
 ## Same-day reruns
 

@@ -17,6 +17,7 @@ from build_nsdb import (
     load_special_zones,
     open_text_stream,
     process_input,
+    select_zone_inputs,
 )
 
 
@@ -40,21 +41,17 @@ def has_nonleading_soa(path: Path) -> bool:
     return fields[3].lower() != "soa" or fields[2].lower() != "in"
 
 
-def preflight(zones_dir: Path, special_zones_file: Path) -> int:
-    manifest = json.loads((zones_dir / "manifest.json").read_text(encoding="utf-8"))
-    entries = manifest.get("files", [])
-    if not entries:
-        raise ValueError("CZDS manifest contains no files")
+def preflight(
+    zones_dir: Path, special_zones_file: Path, excluded_zones: tuple[str, ...] = ()
+) -> int:
+    files, excluded = select_zone_inputs(zones_dir, excluded_zones)
+    if excluded:
+        print("Temporary CZDS exclusion: gov (partial coverage)", flush=True)
 
     special_zones = load_special_zones(special_zones_file)
     completed = 0
-    for entry in entries:
-        filename = entry["filename"]
-        if Path(filename).name != filename:
-            raise ValueError("manifest contains a non-basename path")
-        path = zones_dir / filename
-        if not path.is_file():
-            raise ValueError(f"missing zone file: {filename}")
+    for path in files:
+        filename = path.name
         if not has_nonleading_soa(path):
             continue
         if infer_apex_from_filename(filename) is None:
@@ -81,10 +78,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--zones-dir", type=Path, required=True)
     parser.add_argument("--special-zones", type=Path, required=True)
+    parser.add_argument("--exclude-zone", choices=("gov",), action="append", default=[])
     args = parser.parse_args()
 
     try:
-        preflight(args.zones_dir, args.special_zones)
+        preflight(args.zones_dir, args.special_zones, tuple(args.exclude_zone))
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         raise SystemExit(
             f"NSDB preflight failed (reason={public_validation_code(exc)})"

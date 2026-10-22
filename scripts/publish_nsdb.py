@@ -78,10 +78,12 @@ def write_gzip_copy(path: Path):
             shutil.copyfileobj(src, dst)
 
 
-def write_public_snapshot(path: Path, counts: dict[str, int], k: int, current_tag: str):
+def write_public_snapshot(path: Path, counts: dict[str, int], k: int, current_tag: str, coverage_complete: str = "true", excluded_zones: str = "none"):
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(f"# k={k}\n")
         fh.write(f"# snapshot={current_tag}\n")
+        fh.write(f"# coverage_complete={coverage_complete}\n")
+        fh.write(f"# excluded_zones={excluded_zones}\n")
         fh.write("# format=nameserver|delegations\n")
         for name in sorted(counts):
             fh.write(f"{name}|{counts[name]}\n")
@@ -115,6 +117,33 @@ def load_coverage(path: Path | None) -> set[str]:
     return zones
 
 
+def coverage_status(path: Path, *, required: bool = True) -> tuple[str, str]:
+    """Read explicit, public coverage metadata from the coverage artifact."""
+    if not path.exists():
+        if required:
+            raise ValueError("coverage file is missing")
+        return "true", "none"
+    metadata = {}
+    with open(path, "r", encoding="utf-8") as source:
+        for line in source:
+            if not line.startswith("# "):
+                continue
+            item = line[2:].strip()
+            if "=" in item:
+                key, value = item.split("=", 1)
+                if key in ("coverage_complete", "excluded_zones"):
+                    if key in metadata:
+                        raise ValueError("duplicate coverage status field")
+                    metadata[key] = value
+    if not metadata and not required:
+        return "true", "none"
+    complete = metadata.get("coverage_complete")
+    excluded = metadata.get("excluded_zones")
+    if (complete, excluded) not in (("true", "none"), ("false", "gov")):
+        raise ValueError("invalid or inconsistent coverage status metadata")
+    return complete, excluded
+
+
 def bool_text(value: bool) -> str:
     return "true" if value else "false"
 
@@ -136,6 +165,17 @@ def main():
 
     if args.k < 1:
         raise SystemExit("k must be >= 1")
+
+    current_coverage_status, current_excluded = coverage_status(args.current_coverage)
+    current_coverage = load_coverage(args.current_coverage)
+    current_full = load_key_values(args.current_full_counts)
+    if (
+        current_full.get("coverage_complete") != current_coverage_status
+        or current_full.get("excluded_zones") != current_excluded
+        or current_full.get("zones") != str(len(current_coverage))
+        or (current_excluded != "none" and current_excluded in current_coverage)
+    ):
+        raise SystemExit("current private counts and CZDS coverage status disagree")
 
     args.out.mkdir(parents=True, exist_ok=True)
     current_visible = load_visible(args.current_private, args.k)
@@ -175,7 +215,7 @@ def main():
         raise SystemExit("previous tag supplied without previous public snapshot")
 
     current_snapshot = args.out / "nameservers.txt"
-    write_public_snapshot(current_snapshot, current_visible, args.k, args.current_tag)
+    write_public_snapshot(current_snapshot, current_visible, args.k, args.current_tag, current_coverage_status, current_excluded)
 
     has_previous = args.previous_public is not None and args.previous_public.exists()
     if has_previous:
@@ -192,9 +232,20 @@ def main():
     k_changed = previous_k is not None and previous_k != args.k
 
     previous_coverage = load_coverage(args.previous_coverage)
-    current_coverage = load_coverage(args.current_coverage)
-    coverage_changed = bool(previous_coverage) and previous_coverage != current_coverage
-    comparison_break = coverage_changed or comparison_mode == "k-lowered"
+    previous_status, previous_excluded = (
+        coverage_status(args.previous_coverage, required=False)
+        if args.previous_coverage is not None else ("true", "none")
+    )
+    coverage_changed = bool(previous_coverage) and (
+        previous_coverage != current_coverage
+        or (previous_status, previous_excluded) != (current_coverage_status, current_excluded)
+    )
+    # Partial releases are explicitly not comparable to a complete dataset.
+    comparison_break = (
+        coverage_changed or comparison_mode == "k-lowered"
+        or current_coverage_status == "false"
+        or (has_previous and previous_status == "false")
+    )
 
     diff_path = args.out / "delegation-changes.txt"
     with open(diff_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -202,6 +253,8 @@ def main():
         fh.write(f"# previous_k={previous_k_text}\n")
         fh.write(f"# previous_visibility_k={previous_visibility_k if has_previous else 'none'}\n")
         fh.write(f"# current_visibility_k={args.k}\n")
+        fh.write(f"# coverage_complete={current_coverage_status}\n")
+        fh.write(f"# excluded_zones={current_excluded}\n")
         fh.write(f"# comparison_mode={comparison_mode}\n")
         fh.write(f"# k_changed={bool_text(k_changed)}\n")
         fh.write(f"# coverage_changed={bool_text(coverage_changed)}\n")
@@ -220,6 +273,8 @@ def main():
         fh.write(f"# previous_k={previous_k_text}\n")
         fh.write(f"# previous_visibility_k={previous_visibility_k if has_previous else 'none'}\n")
         fh.write(f"# current_visibility_k={args.k}\n")
+        fh.write(f"# coverage_complete={current_coverage_status}\n")
+        fh.write(f"# excluded_zones={current_excluded}\n")
         fh.write(f"# comparison_mode={comparison_mode}\n")
         fh.write(f"# comparison_break={bool_text(comparison_break)}\n")
         fh.write(f"# previous={args.previous_tag}\n")
@@ -231,7 +286,6 @@ def main():
 
     shutil.copyfile(args.current_coverage, args.out / "coverage.txt")
 
-    current_full = load_key_values(args.current_full_counts)
     previous_full = load_key_values(args.previous_full_counts)
     counts_path = args.out / "counts.txt"
     with open(counts_path, "w", encoding="utf-8", newline="\n") as fh:
@@ -261,6 +315,8 @@ def main():
         fh.write(f"k={args.k}\n")
         fh.write(f"previous_k={previous_k_text}\n")
         fh.write(f"comparison_mode={comparison_mode}\n")
+        fh.write(f"coverage_complete={current_coverage_status}\n")
+        fh.write(f"excluded_zones={current_excluded}\n")
         fh.write(f"k_changed={bool_text(k_changed)}\n")
         fh.write(f"coverage_changed={bool_text(coverage_changed)}\n")
         fh.write(f"comparison_break={bool_text(comparison_break)}\n")

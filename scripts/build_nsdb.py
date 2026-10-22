@@ -239,9 +239,12 @@ def process_zone_stream(
     expected_apex: str | None = None,
 ):
     records = 0
-    apex = normalize_name(expected_apex) if expected_apex is not None else None
+    apex_hint = normalize_name(expected_apex) if expected_apex is not None else None
+    apex = None
     first_soa_serial = "NA"
+    soa_count = 0
     saw_final_soa = False
+    last_record_is_soa = False
     current_owner = None
     current_targets = set()
     previous_owner = None
@@ -294,17 +297,16 @@ def process_zone_stream(
         records += 1
 
         if records == 1:
-            if apex is None:
-                if rrtype != "soa" or rrclass != "in":
-                    raise ValueError(
-                        f"{label}: first record is not SOA and no trusted zone apex hint is available"
-                    )
+            if rrclass == "in" and rrtype == "soa":
+                # The SOA owner is authoritative when a standard header
+                # exists; the filename hint is only a fallback.
                 apex = owner
-            if rrtype == "soa":
-                if owner != apex or rrclass != "in":
-                    raise ValueError(f"{label}: first SOA owner/class conflicts with zone apex {apex}")
-                first_soa_serial = soa_serial(rdata)
-                continue
+            elif apex_hint is not None:
+                apex = apex_hint
+            else:
+                raise ValueError(
+                    f"{label}: first record is not SOA and zone apex cannot be inferred"
+                )
 
         if saw_final_soa:
             raise ValueError(f"{label}: records appear after final SOA")
@@ -313,14 +315,24 @@ def process_zone_stream(
             if owner != apex or rrclass != "in":
                 raise ValueError(f"{label}: SOA owner/class conflicts with zone apex {apex}")
             serial = soa_serial(rdata)
-            if first_soa_serial != "NA" and serial != first_soa_serial:
+            if serial == "NA":
+                raise ValueError(f"{label}: invalid apex SOA serial")
+            if soa_count and serial != first_soa_serial:
                 raise ValueError(
                     f"{label}: mismatched apex SOA serials: {first_soa_serial} versus {serial}"
                 )
+            soa_count += 1
+            if soa_count > 2:
+                raise ValueError(f"{label}: more than two SOA records")
             first_soa_serial = serial
-            flush_owner()
-            saw_final_soa = True
+            last_record_is_soa = True
+            if soa_count == 2:
+                # A second SOA is the duplicated closing record.
+                flush_owner()
+                saw_final_soa = True
             continue
+
+        last_record_is_soa = False
 
         if owner == apex:
             # CZDS exports may place apex metadata anywhere after the
@@ -332,6 +344,9 @@ def process_zone_stream(
             # grouping or ordering. An unrelated A/AAAA/RRSIG owner may
             # appear between NS records for the same delegation.
             continue
+
+        if not owner.endswith("." + apex):
+            raise ValueError(f"{label}: NS delegation owner outside zone {apex}: {owner}")
 
         if current_owner != owner:
             canonical_key = dns_canonical_owner_key(owner_raw)
@@ -362,7 +377,9 @@ def process_zone_stream(
 
     if apex is None:
         raise ValueError(f"{label}: empty zone")
-    if not saw_final_soa:
+    if soa_count == 0:
+        raise ValueError(f"{label}: no valid apex SOA found")
+    if not last_record_is_soa:
         raise ValueError(f"{label}: final SOA missing")
 
     return {

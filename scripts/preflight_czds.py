@@ -11,6 +11,7 @@ from pathlib import Path
 
 from build_nsdb import (
     ZoneValidationError,
+    classify_record_fields,
     public_validation_code,
     infer_apex_from_filename,
     load_special_zones,
@@ -35,7 +36,7 @@ def has_nonleading_soa(path: Path) -> bool:
         first = source.readline().rstrip("\r\n")
     fields = first.split("\t", 4)
     if len(fields) != 5:
-        raise ZoneValidationError("header_record_fields", "first zone record does not have five tab-separated fields")
+        raise ZoneValidationError(classify_record_fields(first), "first zone record does not have five tab-separated fields")
     return fields[3].lower() != "soa" or fields[2].lower() != "in"
 
 

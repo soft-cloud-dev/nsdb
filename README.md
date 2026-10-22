@@ -312,11 +312,29 @@ python scripts/preflight_czds.py \
 
 On validation failure, public logs now include a fixed `reason=<code>`, for example
 `reason=soa_serial_mismatch`, `reason=ns_owner_order`, or
-`reason=record_fields`. The code is selected by the production parser;
+`reason=record_fields_space_delimited`. The code is selected by the production parser;
 neither the offending record, owner, NS target, SOA serial, record offset, nor
 the exception's original message is printed. Unexpected errors become
 `reason=unclassified_error`. Both preflight and the production CLI use
 the same error taxonomy, and all validation gates remain fail-closed.
+
+Malformed records that do not have five tab-separated fields are **still
+rejected**. A shared classifier reports one of these fixed structural hints:
+
+- `record_blank`: empty or whitespace-only record.
+- `record_fields_comment`: comment-like line beginning with a semicolon.
+- `record_fields_directive`: directive-like line beginning with a dollar sign.
+- `record_fields_space_delimited`: no tabs but contains horizontal whitespace.
+- `record_fields_missing_tabs`: no tabs and no horizontal whitespace.
+- `record_fields_partial_tabs`: some tabs, but fewer than four.
+
+The classification is intentionally heuristic. In particular,
+`record_fields_space_delimited` **does not establish** that the entire zone
+uses valid DNS master-file syntax or that accepting whitespace separators
+would preserve correct nameserver counts. Both the first-record preflight
+check and the full stream parser use the same classification. No records
+are skipped, normalized differently, or published as a result of these
+diagnostic changes.
 
 **Troubleshooting licensed inputs:** Run the normal daily-release workflow
 only on the protected runner. If preflight fails, use its reason code to

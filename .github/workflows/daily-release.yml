@@ -63,6 +63,14 @@ jobs:
             --state-dir "$NSDB_STATE_DIR" \
             --day "$DAY"
 
+      - name: Preflight non-leading SOA zone files
+        env:
+          DAY: ${{ steps.date.outputs.day }}
+        run: |
+          python scripts/preflight_czds.py \
+            --zones-dir "$NSDB_STATE_DIR/zones/$DAY" \
+            --special-zones config/locally-served-dns-zones.txt
+
       - name: Build private exact aggregate
         env:
           DAY: ${{ steps.date.outputs.day }}

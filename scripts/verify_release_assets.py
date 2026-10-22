@@ -35,6 +35,37 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def public_coverage_status(path: Path, *, headers: bool) -> tuple[str, str]:
+    """Validate explicit coverage fields without exposing any source records."""
+    values = {}
+    with path.open("r", encoding="utf-8") as source:
+        for line in source:
+            content = line.strip()
+            if headers:
+                if not content.startswith("# "):
+                    continue
+                content = content[2:]
+            if "=" not in content:
+                continue
+            key, value = content.split("=", 1)
+            if key not in ("coverage_complete", "excluded_zones"):
+                continue
+            if key in values:
+                raise ValueError("duplicate public coverage metadata")
+            values[key] = value
+    status = values.get("coverage_complete"), values.get("excluded_zones")
+    if status not in (("true", "none"), ("false", "gov")):
+        raise ValueError("invalid public coverage metadata")
+    return status
+
+
+def require_comparison_break(path: Path, *, headers: bool) -> None:
+    marker = "# comparison_break=true" if headers else "comparison_break=true"
+    with path.open("r", encoding="utf-8") as source:
+        if marker not in {line.strip() for line in source}:
+            raise ValueError("partial coverage must be flagged as comparison_break")
+
+
 def verify(directory: Path) -> None:
     if directory.is_symlink() or not directory.is_dir():
         raise ValueError("release output directory is missing or is a symlink")
@@ -69,6 +100,26 @@ def verify(directory: Path) -> None:
     for name, expected_digest in checksums.items():
         if file_sha256(directory / name) != expected_digest:
             raise ValueError(f"SHA-256 mismatch: {name}")
+
+    statuses = {
+        name: public_coverage_status(directory / name, headers=name not in (
+            "counts.txt", "changes-counts.txt"
+        ))
+        for name in (
+            "nameservers.txt", "coverage.txt", "delegation-changes.txt",
+            "nameserver-changes.txt", "counts.txt", "changes-counts.txt",
+        )
+    }
+    if len(set(statuses.values())) != 1:
+        raise ValueError("release coverage status differs across public artifacts")
+    complete, excluded = statuses["coverage.txt"]
+    if complete == "false":
+        with (directory / "coverage.txt").open("r", encoding="utf-8") as coverage:
+            if any(line.startswith("gov|") for line in coverage):
+                raise ValueError("excluded gov zone present in public coverage")
+        for name in ("delegation-changes.txt", "nameserver-changes.txt"):
+            require_comparison_break(directory / name, headers=True)
+        require_comparison_break(directory / "changes-counts.txt", headers=False)
 
     for name, compressed in GZIP_PAIRS:
         with (directory / compressed).open("rb") as source:

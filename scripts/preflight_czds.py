@@ -10,6 +10,8 @@ import tarfile
 from pathlib import Path
 
 from build_nsdb import (
+    ZoneValidationError,
+    public_validation_code,
     infer_apex_from_filename,
     load_special_zones,
     open_text_stream,
@@ -33,7 +35,7 @@ def has_nonleading_soa(path: Path) -> bool:
         first = source.readline().rstrip("\r\n")
     fields = first.split("\t", 4)
     if len(fields) != 5:
-        raise ValueError("first zone record does not have five tab-separated fields")
+        raise ZoneValidationError("header_record_fields", "first zone record does not have five tab-separated fields")
     return fields[3].lower() != "soa" or fields[2].lower() != "in"
 
 
@@ -55,7 +57,7 @@ def preflight(zones_dir: Path, special_zones_file: Path) -> int:
         if not has_nonleading_soa(path):
             continue
         if infer_apex_from_filename(filename) is None:
-            raise ValueError(f"no trusted apex hint for nonstandard zone: {filename}")
+            raise ZoneValidationError("apex_hint_unavailable", f"no trusted apex hint for nonstandard zone: {filename}")
 
         print(f"Checking non-leading SOA zone: {filename}", flush=True)
         try:
@@ -63,8 +65,9 @@ def preflight(zones_dir: Path, special_zones_file: Path) -> int:
         except Exception as exc:
             # Avoid accidentally exposing a licensed zone record in the
             # publicly readable GitHub Actions logs.
-            raise ValueError(
-                f"failed non-leading SOA preflight for {filename} ({type(exc).__name__})"
+            raise SystemExit(
+                f"failed non-leading SOA preflight for {filename} "
+                f"(reason={public_validation_code(exc)})"
             ) from None
         completed += 1
         print(f"Non-leading SOA validated: {filename}", flush=True)
@@ -82,7 +85,9 @@ def main() -> None:
     try:
         preflight(args.zones_dir, args.special_zones)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
-        raise SystemExit(str(exc)) from None
+        raise SystemExit(
+            f"NSDB preflight failed (reason={public_validation_code(exc)})"
+        ) from None
 
 
 if __name__ == "__main__":

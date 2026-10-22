@@ -29,6 +29,28 @@ class PreflightTests(unittest.TestCase):
         )
 
     @staticmethod
+    def invoke_build(directory: pathlib.Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "build_nsdb.py"),
+                "--zones-dir",
+                str(directory / "zones"),
+                "--special-zones",
+                str(directory / "special-zones.txt"),
+                "--private-counts",
+                str(directory / "private-counts.txt"),
+                "--coverage",
+                str(directory / "coverage.txt"),
+                "--counts",
+                str(directory / "counts.txt"),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @staticmethod
     def setup_fixture(directory: pathlib.Path, filename: str, records: list[str]) -> None:
         zones = directory / "zones"
         zones.mkdir()
@@ -84,6 +106,105 @@ class PreflightTests(unittest.TestCase):
             result = self.invoke(root)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("preflight completed: 0 files", result.stdout)
+
+    def test_failure_reasons_are_safe_and_match_full_aggregation(self):
+        # Every specimen is synthetic. The real licensed .gov input is unavailable
+        # to public CI, so the actual production failure reason is not asserted.
+        initial = "gov.\t3600\tIN\tNS\tns.gov."
+        soa = "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"
+        cases = {
+            "record_blank": [initial, "", soa],
+            "record_fields": [initial, "private-name.gov. malformed", soa],
+            "soa_missing": [initial, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."],
+            "soa_final_missing": [
+                initial, soa, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."
+            ],
+            "soa_owner_class": [
+                initial, "other.\t3600\tIN\tSOA\tns.other. hostmaster.other. 123 2 3 4 5"
+            ],
+            "soa_serial_invalid": [initial, "gov.\t3600\tIN\tSOA\tinvalid"],
+            "soa_serial_mismatch": [
+                initial, soa,
+                "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 124 2 3 4 5",
+            ],
+            "after_final_soa": [
+                initial, soa, soa, "private-name.gov.\t3600\tIN\tA\t192.0.2.1"
+            ],
+            "ns_owner_outside_apex": [
+                initial, "private-name.example.\t3600\tIN\tNS\tns.hidden.example.", soa
+            ],
+            "ns_owner_order": [
+                initial, "z.gov.\t3600\tIN\tNS\tns.hidden.example.",
+                "a.gov.\t3600\tIN\tNS\tns.hidden.example.", soa,
+            ],
+            "ns_rdata_extra": [
+                initial, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example. invalid", soa
+            ],
+            "ns_target_root": [
+                initial, "private-name.gov.\t3600\tIN\tNS\t.", soa
+            ],
+            "dns_name_non_ascii": [
+                initial, "privaté.gov.\t3600\tIN\tNS\tns.hidden.example.", soa
+            ],
+        }
+        for reason, records in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as d:
+                root = pathlib.Path(d)
+                self.setup_fixture(root, "gov.txt.gz", records)
+                preflight = self.invoke(root)
+                full = self.invoke_build(root)
+                self.assertNotEqual(preflight.returncode, 0, preflight.stdout)
+                self.assertNotEqual(full.returncode, 0, full.stdout)
+                self.assertIn(f"reason={reason}", preflight.stderr)
+                self.assertIn(f"reason={reason}", full.stderr)
+                for result in (preflight, full):
+                    output = result.stdout + result.stderr
+                    self.assertNotIn("private-name", output)
+                    self.assertNotIn("ns.hidden.example", output)
+                    self.assertNotIn("hostmaster.gov", output)
+                    self.assertNotIn("privaté.gov", output)
+
+    def test_nonleading_soa_and_glue_deduplicate_in_both_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            self.setup_fixture(
+                root, "gov.txt.gz",
+                [
+                    "gov.\t3600\tIN\tNS\tns.gov.",
+                    "a.gov.\t3600\tIN\tNS\tNS.Hidden.Example.",
+                    "host.a.gov.\t3600\tIN\tA\t192.0.2.3",
+                    "a.gov.\t3600\tIN\tNS\tns.hidden.example.",
+                    "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+                ]
+            )
+            preflight = self.invoke(root)
+            full = self.invoke_build(root)
+            self.assertEqual(preflight.returncode, 0, preflight.stderr)
+            self.assertEqual(full.returncode, 0, full.stderr)
+            self.assertEqual(
+                (root / "private-counts.txt").read_text(encoding="utf-8").splitlines(),
+                ["# format=nameserver|delegations", "ns.hidden.example|1"],
+            )
+            self.assertIn("delegation_edges=1", (root / "counts.txt").read_text(encoding="utf-8"))
+            self.assertNotIn("ns.hidden.example", preflight.stdout + preflight.stderr)
+
+    def test_plain_valueerror_cannot_inject_exception_text(self):
+        # A third-party validation exception is deliberately not made public.
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            self.setup_fixture(
+                root, "gov.txt.gz",
+                ["gov.\t3600\tIN\tNS\tns.gov.", "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"],
+            )
+            sys.path.insert(0, str(ROOT / "scripts"))
+            try:
+                from build_nsdb import public_validation_code
+                self.assertEqual(
+                    public_validation_code(ValueError("secret.internal.example.")),
+                    "unclassified_error",
+                )
+            finally:
+                sys.path.remove(str(ROOT / "scripts"))
 
 
 if __name__ == "__main__":

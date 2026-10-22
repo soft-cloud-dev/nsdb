@@ -10,8 +10,25 @@ from pathlib import Path
 
 
 # These fixed codes may appear in public CI logs; exception messages may not.
-_PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling","dns_escape_decimal_range","dns_label_empty","dns_label_too_long","dns_name_too_long","dns_label_non_ascii","ns_target_empty","ns_rdata_extra","ns_target_escape_dangling","ns_target_root","record_blank","record_fields","header_record_fields","apex_hint_missing","apex_hint_unavailable","after_final_soa","soa_owner_class","soa_serial_invalid","soa_serial_mismatch","soa_excess","ns_owner_outside_apex","ns_owner_order","zone_empty","soa_missing","soa_final_missing","archive_empty","archive_member_unreadable"])
+_PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling","dns_escape_decimal_range","dns_label_empty","dns_label_too_long","dns_name_too_long","dns_label_non_ascii","ns_target_empty","ns_rdata_extra","ns_target_escape_dangling","ns_target_root","record_blank","record_fields","header_record_fields","apex_hint_missing","apex_hint_unavailable","after_final_soa","soa_owner_class","soa_serial_invalid","soa_serial_mismatch","soa_excess","ns_owner_outside_apex","ns_owner_order","zone_empty","soa_missing","soa_final_missing","archive_empty","archive_member_unreadable","record_fields_comment","record_fields_directive","record_fields_space_delimited","record_fields_missing_tabs","record_fields_partial_tabs","record_fields_mixed_delimiters"])
 
+
+def classify_record_fields(line: str) -> str:
+    """Fixed structural code only; never return private source text or offsets.
+
+    Classification does not change validation: malformed records still fail.
+    """
+    if not line.strip():
+        return "record_blank"
+    if line.lstrip().startswith(";"):
+        return "record_fields_comment"
+    if line.lstrip().startswith("$"):
+        return "record_fields_directive"
+    if "\t" not in line:
+        if any(char in line for char in " \v\f"):
+            return "record_fields_space_delimited"
+        return "record_fields_missing_tabs"
+    return "record_fields_partial_tabs"
 
 class ZoneValidationError(ValueError):
     """Detailed errors remain private; a fixed code identifies the invariant."""
@@ -318,7 +335,7 @@ def process_zone_stream(
             raise ZoneValidationError("record_blank", f"{label}: blank line violates CZDS zone format")
         fields = line.split("\t", 4)
         if len(fields) != 5:
-            raise ZoneValidationError("record_fields", f"{label}: expected five tab-separated fields at record {records + 1}")
+            raise ZoneValidationError(classify_record_fields(line), f"{label}: expected five tab-separated fields at record {records + 1}")
         owner_raw, ttl, rrclass, rrtype, rdata = fields
         owner = normalize_name(owner_raw)
         rrclass = rrclass.lower()

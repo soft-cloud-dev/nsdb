@@ -14,23 +14,21 @@ _PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling"
 
 
 def classify_record_fields(line: str) -> str:
-    """Return an audited, fixed code; never emit record text or position."""
-    if not line:
+    """Fixed structural code only; never return private source text or offsets.
+
+    Classification does not change validation: malformed records still fail.
+    """
+    if not line.strip():
         return "record_blank"
-    stripped = line.lstrip()
-    if stripped.startswith((";", "#")):
+    if line.lstrip().startswith(";"):
         return "record_fields_comment"
-    if stripped.startswith("$"):
+    if line.lstrip().startswith("$"):
         return "record_fields_directive"
-    tabs = line.count("\t")
-    if tabs == 0:
+    if "\t" not in line:
         if any(char in line for char in " \v\f"):
             return "record_fields_space_delimited"
         return "record_fields_missing_tabs"
-    if any(char in line for char in " \v\f"):
-        return "record_fields_mixed_delimiters"
     return "record_fields_partial_tabs"
-
 
 class ZoneValidationError(ValueError):
     """Detailed errors remain private; a fixed code identifies the invariant."""

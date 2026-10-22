@@ -140,6 +140,63 @@ class InitialReleaseTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertNotIn("ns.secret.example", result.stdout + result.stderr)
 
+    def test_partial_release_verifier_rejects_mislabeled_or_unmarked_assets(self):
+        with tempfile.TemporaryDirectory() as temp:
+            out = pathlib.Path(temp)
+            fixture = {
+                "nameservers.txt": "# k=5\n# coverage_complete=false\n# excluded_zones=gov\n",
+                "coverage.txt": (
+                    "# format=zone|soa_serial|records|delegated_names|delegation_edges\n"
+                    "# coverage_complete=false\n# excluded_zones=gov\nexample|1|1|1|1\n"
+                ),
+                "delegation-changes.txt": (
+                    "# coverage_complete=false\n# excluded_zones=gov\n# comparison_break=true\n"
+                ),
+                "nameserver-changes.txt": (
+                    "# coverage_complete=false\n# excluded_zones=gov\n# comparison_break=true\n"
+                ),
+                "counts.txt": "coverage_complete=false\nexcluded_zones=gov\n",
+                "changes-counts.txt": (
+                    "coverage_complete=false\nexcluded_zones=gov\ncomparison_break=true\n"
+                ),
+            }
+            for name in ASSETS.ARTIFACTS:
+                (out / name).write_text(fixture.get(name, "public\n"), encoding="utf-8")
+            for name, compressed in ASSETS.GZIP_PAIRS:
+                with (out / compressed).open("wb") as raw:
+                    with gzip.GzipFile(fileobj=raw, mode="wb", filename="", mtime=0) as stream:
+                        stream.write((out / name).read_bytes())
+
+            def sums():
+                (out / "SHA256SUMS").write_text("".join(
+                    f"{hashlib.sha256((out / name).read_bytes()).hexdigest()}  {name}\n"
+                    for name in ASSETS.ARTIFACTS
+                ), encoding="utf-8")
+
+            sums()
+            ASSETS.verify(out)
+
+            (out / "counts.txt").write_text("coverage_complete=true\nexcluded_zones=none\n")
+            sums()
+            with self.assertRaisesRegex(ValueError, "coverage"):
+                ASSETS.verify(out)
+
+            (out / "counts.txt").write_text(fixture["counts.txt"])
+            (out / "changes-counts.txt").write_text(
+                "coverage_complete=false\nexcluded_zones=gov\ncomparison_break=false\n"
+            )
+            sums()
+            with self.assertRaisesRegex(ValueError, "comparison_break"):
+                ASSETS.verify(out)
+
+            (out / "changes-counts.txt").write_text(fixture["changes-counts.txt"])
+            (out / "coverage.txt").write_text(
+                fixture["coverage.txt"] + "gov|1|1|1|1\n"
+            )
+            sums()
+            with self.assertRaisesRegex(ValueError, "excluded gov zone"):
+                ASSETS.verify(out)
+
     def test_release_payload_checksum_and_attestation_input(self):
         with tempfile.TemporaryDirectory() as temp:
             out = pathlib.Path(temp)

@@ -215,9 +215,31 @@ class Aggregate:
         self.conn.close()
 
 
-def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggregate: Aggregate):
+def infer_apex_from_filename(filename: str) -> str | None:
+    """Use the CZDS zone filename as a trusted apex hint when SOA is not first.
+
+    The common CZDS formats are <tld>.txt.gz and <tld>.zone.gz.
+    A filename without a recognized zone suffix is not an apex hint.
+    """
+    basename = Path(filename).name
+    for suffix in (".txt.gz", ".zone.gz", ".txt", ".zone"):
+        if basename.lower().endswith(suffix):
+            candidate = basename[: -len(suffix)]
+            if candidate:
+                return normalize_name(candidate)
+            break
+    return None
+
+
+def process_zone_stream(
+    stream,
+    label: str,
+    special_zones: tuple[str, ...],
+    aggregate: Aggregate,
+    expected_apex: str | None = None,
+):
     records = 0
-    apex = None
+    apex = normalize_name(expected_apex) if expected_apex is not None else None
     first_soa_serial = "NA"
     saw_final_soa = False
     current_owner = None
@@ -272,19 +294,33 @@ def process_zone_stream(stream, label: str, special_zones: tuple[str, ...], aggr
         records += 1
 
         if records == 1:
-            if rrtype != "soa":
-                raise ValueError(f"{label}: first record is not SOA")
-            apex = owner
-            first_soa_serial = soa_serial(rdata)
-            continue
-
-        if owner == apex and rrtype == "soa":
-            flush_owner()
-            saw_final_soa = True
-            continue
+            if apex is None:
+                if rrtype != "soa" or rrclass != "in":
+                    raise ValueError(
+                        f"{label}: first record is not SOA and no trusted zone apex hint is available"
+                    )
+                apex = owner
+            if rrtype == "soa":
+                if owner != apex or rrclass != "in":
+                    raise ValueError(f"{label}: first SOA owner/class conflicts with zone apex {apex}")
+                first_soa_serial = soa_serial(rdata)
+                continue
 
         if saw_final_soa:
             raise ValueError(f"{label}: records appear after final SOA")
+
+        if rrtype == "soa":
+            if owner != apex or rrclass != "in":
+                raise ValueError(f"{label}: SOA owner/class conflicts with zone apex {apex}")
+            serial = soa_serial(rdata)
+            if first_soa_serial != "NA" and serial != first_soa_serial:
+                raise ValueError(
+                    f"{label}: mismatched apex SOA serials: {first_soa_serial} versus {serial}"
+                )
+            first_soa_serial = serial
+            flush_owner()
+            saw_final_soa = True
+            continue
 
         if owner == apex:
             # CZDS exports may place apex metadata anywhere after the
@@ -360,10 +396,20 @@ def process_input(path: Path, special_zones, aggregate):
                 if raw is None:
                     raise ValueError(f"{path}: cannot read {member.name}")
                 with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
-                    rows.append(process_zone_stream(text, f"{path.name}:{member.name}", special_zones, aggregate))
+                    rows.append(
+                        process_zone_stream(
+                            text, f"{path.name}:{member.name}", special_zones,
+                            aggregate, expected_apex=infer_apex_from_filename(member.name),
+                        )
+                    )
     else:
         with open_text_stream(path) as text:
-            rows.append(process_zone_stream(text, path.name, special_zones, aggregate))
+            rows.append(
+                process_zone_stream(
+                    text, path.name, special_zones, aggregate,
+                    expected_apex=infer_apex_from_filename(path.name),
+                )
+            )
     return rows
 
 

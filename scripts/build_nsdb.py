@@ -14,19 +14,19 @@ _PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling"
 
 
 def classify_record_fields(line: str) -> str:
-    """Classify record shape only; never expose raw content or offsets."""
+    """Classify format violations without disclosing record content or offsets."""
     if not line:
         return "record_blank"
-    if line.lstrip().startswith(";"):
+    leading = line.lstrip()
+    if leading.startswith(";"):
         return "record_fields_comment"
-    if line.lstrip().startswith("$"):
+    if leading.startswith("$"):
         return "record_fields_directive"
-    if "\\t" not in line and any(char in line for char in " \\v\\f"):
+    if "\t" in line:
+        return "record_fields_partial_tabs"
+    if any(char.isspace() for char in line):
         return "record_fields_space_delimited"
-    if "\\t" not in line:
-        return "record_fields_missing_tabs"
-    return "record_fields_partial_tabs"
-
+    return "record_fields_missing_tabs"
 
 class ZoneValidationError(ValueError):
     """Detailed errors remain private; a fixed code identifies the invariant."""

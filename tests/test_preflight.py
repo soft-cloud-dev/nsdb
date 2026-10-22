@@ -114,7 +114,15 @@ class PreflightTests(unittest.TestCase):
         soa = "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"
         cases = {
             "record_blank": [initial, "", soa],
-            "record_fields": [initial, "private-name.gov. malformed", soa],
+            "record_fields_comment": [initial, "  ; private-name.gov. hidden", soa],
+            "record_fields_directive": [initial, "  $ORIGIN private-name.gov.", soa],
+            "record_fields_space_delimited": [
+                initial, "private-name.gov. 3600 IN NS ns.hidden.example.", soa
+            ],
+            "record_fields_missing_tabs": [initial, "private-name.gov.", soa],
+            "record_fields_partial_tabs": [
+                initial, "private-name.gov.\t3600\tIN NS ns.hidden.example.", soa
+            ],
             "soa_missing": [initial, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."],
             "soa_final_missing": [
                 initial, soa, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."
@@ -163,6 +171,33 @@ class PreflightTests(unittest.TestCase):
                     self.assertNotIn("ns.hidden.example", output)
                     self.assertNotIn("hostmaster.gov", output)
                     self.assertNotIn("privaté.gov", output)
+
+    def test_first_record_format_reason_matches_full_aggregation(self):
+        # Both CLI entry points must use the same structural classifier,
+        # including the preflight header check before process_input().
+        cases = {
+            "record_blank": "",
+            "record_fields_comment": "; private-name.gov. confidential",
+            "record_fields_directive": "$TTL 3600",
+            "record_fields_space_delimited": "private-name.gov. 3600 IN NS ns.hidden.example.",
+            "record_fields_missing_tabs": "private-name.gov.",
+            "record_fields_partial_tabs": "private-name.gov.\t3600\tIN NS ns.hidden.example.",
+        }
+        final = "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"
+        for reason, first in cases.items():
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as d:
+                root = pathlib.Path(d)
+                self.setup_fixture(root, "gov.txt.gz", [first, final])
+                preflight = self.invoke(root)
+                build = self.invoke_build(root)
+                self.assertNotEqual(preflight.returncode, 0)
+                self.assertNotEqual(build.returncode, 0)
+                for result in (preflight, build):
+                    output = result.stdout + result.stderr
+                    self.assertIn(f"reason={reason}", output)
+                    self.assertNotIn("private-name.gov.", output)
+                    self.assertNotIn("ns.hidden.example", output)
+                    self.assertNotIn("hostmaster.gov", output)
 
     def test_nonleading_soa_and_glue_deduplicate_in_both_paths(self):
         with tempfile.TemporaryDirectory() as d:

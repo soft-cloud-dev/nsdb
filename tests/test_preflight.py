@@ -110,41 +110,41 @@ class PreflightTests(unittest.TestCase):
     def test_failure_reasons_are_safe_and_match_full_aggregation(self):
         # Every specimen is synthetic. The real licensed .gov input is unavailable
         # to public CI, so the actual production failure reason is not asserted.
-        initial = "gov.\\t3600\\tIN\\tNS\\tns.gov."
-        soa = "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5"
+        initial = "gov.\t3600\tIN\tNS\tns.gov."
+        soa = "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"
         cases = {
             "record_blank": [initial, "", soa],
             "record_fields": [initial, "private-name.gov. malformed", soa],
-            "soa_missing": [initial, "private-name.gov.\\t3600\\tIN\\tNS\\tns.hidden.example."],
+            "soa_missing": [initial, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."],
             "soa_final_missing": [
-                initial, soa, "private-name.gov.\\t3600\\tIN\\tNS\\tns.hidden.example."
+                initial, soa, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example."
             ],
             "soa_owner_class": [
-                initial, "other.\\t3600\\tIN\\tSOA\\tns.other. hostmaster.other. 123 2 3 4 5"
+                initial, "other.\t3600\tIN\tSOA\tns.other. hostmaster.other. 123 2 3 4 5"
             ],
-            "soa_serial_invalid": [initial, "gov.\\t3600\\tIN\\tSOA\\tinvalid"],
+            "soa_serial_invalid": [initial, "gov.\t3600\tIN\tSOA\tinvalid"],
             "soa_serial_mismatch": [
                 initial, soa,
-                "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 124 2 3 4 5",
+                "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 124 2 3 4 5",
             ],
             "after_final_soa": [
-                initial, soa, soa, "private-name.gov.\\t3600\\tIN\\tA\\t192.0.2.1"
+                initial, soa, soa, "private-name.gov.\t3600\tIN\tA\t192.0.2.1"
             ],
             "ns_owner_outside_apex": [
-                initial, "private-name.example.\\t3600\\tIN\\tNS\\tns.hidden.example.", soa
+                initial, "private-name.example.\t3600\tIN\tNS\tns.hidden.example.", soa
             ],
             "ns_owner_order": [
-                initial, "z.gov.\\t3600\\tIN\\tNS\\tns.hidden.example.",
-                "a.gov.\\t3600\\tIN\\tNS\\tns.hidden.example.", soa,
+                initial, "z.gov.\t3600\tIN\tNS\tns.hidden.example.",
+                "a.gov.\t3600\tIN\tNS\tns.hidden.example.", soa,
             ],
             "ns_rdata_extra": [
-                initial, "private-name.gov.\\t3600\\tIN\\tNS\\tns.hidden.example. invalid", soa
+                initial, "private-name.gov.\t3600\tIN\tNS\tns.hidden.example. invalid", soa
             ],
             "ns_target_root": [
-                initial, "private-name.gov.\\t3600\\tIN\\tNS\\t.", soa
+                initial, "private-name.gov.\t3600\tIN\tNS\t.", soa
             ],
             "dns_name_non_ascii": [
-                initial, "privaté.gov.\\t3600\\tIN\\tNS\\tns.hidden.example.", soa
+                initial, "privaté.gov.\t3600\tIN\tNS\tns.hidden.example.", soa
             ],
         }
         for reason, records in cases.items():
@@ -170,11 +170,11 @@ class PreflightTests(unittest.TestCase):
             self.setup_fixture(
                 root, "gov.txt.gz",
                 [
-                    "gov.\\t3600\\tIN\\tNS\\tns.gov.",
-                    "a.gov.\\t3600\\tIN\\tNS\\tNS.Hidden.Example.",
-                    "host.a.gov.\\t3600\\tIN\\tA\\t192.0.2.3",
-                    "a.gov.\\t3600\\tIN\\tNS\\tns.hidden.example.",
-                    "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
+                    "gov.\t3600\tIN\tNS\tns.gov.",
+                    "a.gov.\t3600\tIN\tNS\tNS.Hidden.Example.",
+                    "host.a.gov.\t3600\tIN\tA\t192.0.2.3",
+                    "a.gov.\t3600\tIN\tNS\tns.hidden.example.",
+                    "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
                 ]
             )
             preflight = self.invoke(root)
@@ -194,7 +194,7 @@ class PreflightTests(unittest.TestCase):
             root = pathlib.Path(d)
             self.setup_fixture(
                 root, "gov.txt.gz",
-                ["gov.\\t3600\\tIN\\tNS\\tns.gov.", "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5"],
+                ["gov.\t3600\tIN\tNS\tns.gov.", "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5"],
             )
             sys.path.insert(0, str(ROOT / "scripts"))
             try:

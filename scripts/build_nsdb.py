@@ -9,12 +9,41 @@ import tarfile
 from pathlib import Path
 
 
+# These fixed codes may appear in public CI logs; exception messages may not.
+_PUBLIC_VALIDATION_CODES = frozenset(["dns_name_non_ascii","dns_escape_dangling","dns_escape_decimal_range","dns_label_empty","dns_label_too_long","dns_name_too_long","dns_label_non_ascii","ns_target_empty","ns_rdata_extra","ns_target_escape_dangling","ns_target_root","record_blank","record_fields","header_record_fields","apex_hint_missing","apex_hint_unavailable","after_final_soa","soa_owner_class","soa_serial_invalid","soa_serial_mismatch","soa_excess","ns_owner_outside_apex","ns_owner_order","zone_empty","soa_missing","soa_final_missing","archive_empty","archive_member_unreadable"])
+
+
+class ZoneValidationError(ValueError):
+    """Detailed errors remain private; a fixed code identifies the invariant."""
+
+    def __init__(self, code: str, detail: str):
+        if code not in _PUBLIC_VALIDATION_CODES:
+            raise ValueError("unknown validation code")
+        super().__init__(detail)
+        self.code = code
+
+
+def public_validation_code(exc: BaseException) -> str:
+    """Never use exception text or zone-record data in public diagnostics."""
+    if isinstance(exc, ZoneValidationError) and exc.code in _PUBLIC_VALIDATION_CODES:
+        return exc.code
+    if isinstance(exc, UnicodeError):
+        return "input_encoding"
+    if isinstance(exc, EOFError):
+        return "input_truncated"
+    if isinstance(exc, OSError):
+        return "input_io"
+    if isinstance(exc, tarfile.TarError):
+        return "archive_error"
+    return "unclassified_error"
+
+
 def _parse_master_name(value: str) -> list[bytes]:
     source = value.strip()
     try:
         source.encode("ascii")
     except UnicodeEncodeError as exc:
-        raise ValueError(f"non-ASCII DNS name; expected A-label/master-file form: {value!r}") from exc
+        raise ZoneValidationError("dns_name_non_ascii", f"non-ASCII DNS name; expected A-label/master-file form: {value!r}") from exc
 
     if source == ".":
         return []
@@ -26,14 +55,14 @@ def _parse_master_name(value: str) -> list[bytes]:
         if char == "\\":
             index += 1
             if index >= len(source):
-                raise ValueError(f"dangling DNS master-file escape: {value!r}")
+                raise ZoneValidationError("dns_escape_dangling", f"dangling DNS master-file escape: {value!r}")
             if (
                 index + 2 < len(source)
                 and source[index : index + 3].isdigit()
             ):
                 octet = int(source[index : index + 3], 10)
                 if octet > 255:
-                    raise ValueError(f"DNS decimal escape exceeds 255: {value!r}")
+                    raise ZoneValidationError("dns_escape_decimal_range", f"DNS decimal escape exceeds 255: {value!r}")
                 labels[-1].append(octet)
                 index += 3
                 continue
@@ -46,7 +75,7 @@ def _parse_master_name(value: str) -> list[bytes]:
                 index += 1
                 break
             if not labels[-1]:
-                raise ValueError(f"empty DNS label: {value!r}")
+                raise ZoneValidationError("dns_label_empty", f"empty DNS label: {value!r}")
             labels.append(bytearray())
             index += 1
             continue
@@ -55,23 +84,23 @@ def _parse_master_name(value: str) -> list[bytes]:
         index += 1
 
     if labels and not labels[-1]:
-        raise ValueError(f"empty DNS label: {value!r}")
+        raise ZoneValidationError("dns_label_empty", f"empty DNS label: {value!r}")
 
     result = [bytes(label) for label in labels]
     for label in result:
         if len(label) > 63:
-            raise ValueError(f"DNS label exceeds 63 octets: {value!r}")
+            raise ZoneValidationError("dns_label_too_long", f"DNS label exceeds 63 octets: {value!r}")
 
     wire_length = 1 + sum(1 + len(label) for label in result)
     if wire_length > 255:
-        raise ValueError(f"DNS name exceeds 255 wire octets: {value!r}")
+        raise ZoneValidationError("dns_name_too_long", f"DNS name exceeds 255 wire octets: {value!r}")
 
     return result
 
 
 def _canonical_label(label: bytes, original: str) -> str:
     if any(octet >= 128 for octet in label):
-        raise ValueError(f"non-ASCII DNS label; expected A-label form: {original!r}")
+        raise ZoneValidationError("dns_label_non_ascii", f"non-ASCII DNS label; expected A-label form: {original!r}")
 
     lowered = bytes(
         octet + 32 if 65 <= octet <= 90 else octet
@@ -113,7 +142,7 @@ def dns_canonical_owner_key(value: str) -> tuple[bytes, ...]:
 def parse_single_name_rdata(rdata: str, label: str, owner: str) -> str:
     source = rdata.strip()
     if not source:
-        raise ValueError(f"{label}: empty NS target for {owner}")
+        raise ZoneValidationError("ns_target_empty", f"{label}: empty NS target for {owner}")
 
     escaped = False
     index = 0
@@ -132,17 +161,17 @@ def parse_single_name_rdata(rdata: str, label: str, owner: str) -> str:
             continue
         if char.isspace():
             if source[index:].strip():
-                raise ValueError(f"{label}: NS record has extra RDATA fields for {owner}")
+                raise ZoneValidationError("ns_rdata_extra", f"{label}: NS record has extra RDATA fields for {owner}")
             source = source[:index]
             break
         index += 1
 
     if escaped:
-        raise ValueError(f"{label}: dangling escape in NS target for {owner}")
+        raise ZoneValidationError("ns_target_escape_dangling", f"{label}: dangling escape in NS target for {owner}")
 
     target = normalize_name(source)
     if not target:
-        raise ValueError(f"{label}: root/empty NS target for {owner}")
+        raise ZoneValidationError("ns_target_root", f"{label}: root/empty NS target for {owner}")
     return target
 
 
@@ -286,10 +315,10 @@ def process_zone_stream(
             raw = raw.decode("utf-8")
         line = raw.rstrip("\r\n")
         if not line:
-            raise ValueError(f"{label}: blank line violates CZDS zone format")
+            raise ZoneValidationError("record_blank", f"{label}: blank line violates CZDS zone format")
         fields = line.split("\t", 4)
         if len(fields) != 5:
-            raise ValueError(f"{label}: expected five tab-separated fields at record {records + 1}")
+            raise ZoneValidationError("record_fields", f"{label}: expected five tab-separated fields at record {records + 1}")
         owner_raw, ttl, rrclass, rrtype, rdata = fields
         owner = normalize_name(owner_raw)
         rrclass = rrclass.lower()
@@ -304,26 +333,28 @@ def process_zone_stream(
             elif apex_hint is not None:
                 apex = apex_hint
             else:
-                raise ValueError(
+                raise ZoneValidationError(
+                    "apex_hint_missing",
                     f"{label}: first record is not SOA and zone apex cannot be inferred"
                 )
 
         if saw_final_soa:
-            raise ValueError(f"{label}: records appear after final SOA")
+            raise ZoneValidationError("after_final_soa", f"{label}: records appear after final SOA")
 
         if rrtype == "soa":
             if owner != apex or rrclass != "in":
-                raise ValueError(f"{label}: SOA owner/class conflicts with zone apex {apex}")
+                raise ZoneValidationError("soa_owner_class", f"{label}: SOA owner/class conflicts with zone apex {apex}")
             serial = soa_serial(rdata)
             if serial == "NA":
-                raise ValueError(f"{label}: invalid apex SOA serial")
+                raise ZoneValidationError("soa_serial_invalid", f"{label}: invalid apex SOA serial")
             if soa_count and serial != first_soa_serial:
-                raise ValueError(
+                raise ZoneValidationError(
+                    "soa_serial_mismatch",
                     f"{label}: mismatched apex SOA serials: {first_soa_serial} versus {serial}"
                 )
             soa_count += 1
             if soa_count > 2:
-                raise ValueError(f"{label}: more than two SOA records")
+                raise ZoneValidationError("soa_excess", f"{label}: more than two SOA records")
             first_soa_serial = serial
             last_record_is_soa = True
             if soa_count == 2:
@@ -346,7 +377,7 @@ def process_zone_stream(
             continue
 
         if not owner.endswith("." + apex):
-            raise ValueError(f"{label}: NS delegation owner outside zone {apex}: {owner}")
+            raise ZoneValidationError("ns_owner_outside_apex", f"{label}: NS delegation owner outside zone {apex}: {owner}")
 
         if current_owner != owner:
             canonical_key = dns_canonical_owner_key(owner_raw)
@@ -362,7 +393,8 @@ def process_zone_stream(
                 if canonical_key < previous_owner_canonical_key:
                     canonical_order_possible = False
                 if not (plain_order_possible or canonical_order_possible):
-                    raise ValueError(
+                    raise ZoneValidationError(
+                        "ns_owner_order",
                         f"{label}: NS delegation owners violate both plain and DNS "
                         f"canonical ordering: {owner} after {previous_owner}"
                     )
@@ -376,11 +408,11 @@ def process_zone_stream(
     flush_owner()
 
     if apex is None:
-        raise ValueError(f"{label}: empty zone")
+        raise ZoneValidationError("zone_empty", f"{label}: empty zone")
     if soa_count == 0:
-        raise ValueError(f"{label}: no valid apex SOA found")
+        raise ZoneValidationError("soa_missing", f"{label}: no valid apex SOA found")
     if not last_record_is_soa:
-        raise ValueError(f"{label}: final SOA missing")
+        raise ZoneValidationError("soa_final_missing", f"{label}: final SOA missing")
 
     return {
         "zone": apex,
@@ -407,11 +439,11 @@ def process_input(path: Path, special_zones, aggregate):
         with tarfile.open(path, "r:*") as tar:
             members = [m for m in tar.getmembers() if m.isfile()]
             if not members:
-                raise ValueError(f"{path}: tar contains no zone files")
+                raise ZoneValidationError("archive_empty", f"{path}: tar contains no zone files")
             for member in sorted(members, key=lambda m: m.name):
                 raw = tar.extractfile(member)
                 if raw is None:
-                    raise ValueError(f"{path}: cannot read {member.name}")
+                    raise ZoneValidationError("archive_member_unreadable", f"{path}: cannot read {member.name}")
                 with io.TextIOWrapper(raw, encoding="utf-8", newline="") as text:
                     rows.append(
                         process_zone_stream(
@@ -501,4 +533,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        # GitHub Actions logs are public and exception text may contain licensed RDATA.
+        raise SystemExit(
+            f"NSDB aggregation failed (reason={public_validation_code(exc)})"
+        ) from None

@@ -310,6 +310,26 @@ python scripts/preflight_czds.py \
   --special-zones config/locally-served-dns-zones.txt
 ```
 
+On validation failure, public logs now include a fixed `reason=<code>`, for example
+`reason=soa_serial_mismatch`, `reason=ns_owner_order`, or
+`reason=record_fields`. The code is selected by the production parser;
+neither the offending record, owner, NS target, SOA serial, record offset, nor
+the exception's original message is printed. Unexpected errors become
+`reason=unclassified_error`. Both preflight and the production CLI use
+the same error taxonomy, and all validation gates remain fail-closed.
+
+**Troubleshooting licensed inputs:** Run the normal daily-release workflow
+only on the protected runner. If preflight fails, use its reason code to
+construct a synthetic zone reproducer before changing validation behavior.
+Compare that reproducer under `preflight_czds.py` and `build_nsdb.py`.
+Do not enable tracebacks, dump raw zone records, print detailed exception
+messages, or upload intermediate private counts to GitHub. Until the
+actual production code is observed, a parser assumption cannot be
+distinguished from a nonconforming CZDS zone. The separate per-zone
+checkpoint work in [issue #6](https://github.com/soft-cloud-dev/nsdb/issues/6)
+should retain the shared `process_input` semantics and include its parser
+source digest in cache invalidation.
+
 Normal first-SOA archives are not fully re-parsed during this preflight. A passing preflight therefore does **not** certify the entire CZDS dataset, and the full build remains mandatory. The current aggregation uses an ephemeral global SQLite database, so a failed run reprocesses earlier zones; per-zone private checkpoints are a separate future reliability improvement.
 
 ## Same-day reruns

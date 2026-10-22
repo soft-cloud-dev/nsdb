@@ -100,15 +100,15 @@ class BuildTests(unittest.TestCase):
             path = pathlib.Path(tmp) / "gov.txt.gz"
             with gzip.open(path, "wt", encoding="utf-8") as stream:
                 stream.write(
-                    "\\n".join(
+                    "\n".join(
                         (
-                            "gov.\\t3600\\tIN\\tNS\\tns.gov.",
-                            "alpha.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-                            "beta.gov.\\t3600\\tIN\\tNS\\tns2.example.net.",
-                            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
+                            "gov.\t3600\tIN\tNS\tns.gov.",
+                            "alpha.gov.\t3600\tIN\tNS\tns1.example.net.",
+                            "beta.gov.\t3600\tIN\tNS\tns2.example.net.",
+                            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
                         )
                     )
-                    + "\\n"
+                    + "\n"
                 )
             rows = MOD.process_input(path, (), aggregate)
 
@@ -122,68 +122,68 @@ class BuildTests(unittest.TestCase):
     def test_nonleading_initial_soa_and_final_soa_are_supported(self):
         aggregate = DummyAggregate()
         stream = zone(
-            "gov.\\t3600\\tIN\\tNS\\tns.gov.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
-            "alpha.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "gov.\t3600\tIN\tNS\tns.gov.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "alpha.gov.\t3600\tIN\tNS\tns1.example.net.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
         )
         result = MOD.process_zone_stream(stream, "gov-fixture", (), aggregate, expected_apex="gov")
         self.assertEqual(result["delegated_names"], 1)
         self.assertEqual(aggregate.values, ["ns1.example.net"])
 
     def test_no_soa_is_not_accepted_even_with_filename_hint(self):
-        stream = zone("a.gov.\\t3600\\tIN\\tNS\\tns1.example.net.")
+        stream = zone("a.gov.\t3600\tIN\tNS\tns1.example.net.")
         with self.assertRaisesRegex(ValueError, "no valid apex SOA"):
             MOD.process_zone_stream(stream, "gov-fixture", (), DummyAggregate(), expected_apex="gov")
 
     def test_soas_must_have_consistent_serials(self):
         stream = zone(
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
-            "a.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 124 2 3 4 5",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "a.gov.\t3600\tIN\tNS\tns1.example.net.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 124 2 3 4 5",
         )
         with self.assertRaisesRegex(ValueError, "mismatched apex SOA serials"):
             MOD.process_zone_stream(stream, "gov-fixture", (), DummyAggregate())
 
     def test_nonleading_soa_must_be_last_when_not_duplicated(self):
         stream = zone(
-            "a.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
-            "b.gov.\\t3600\\tIN\\tNS\\tns2.example.net.",
+            "a.gov.\t3600\tIN\tNS\tns1.example.net.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "b.gov.\t3600\tIN\tNS\tns2.example.net.",
         )
         with self.assertRaisesRegex(ValueError, "final SOA missing"):
             MOD.process_zone_stream(stream, "gov-fixture", (), DummyAggregate(), expected_apex="gov")
 
     def test_no_apex_hint_requires_leading_soa(self):
         stream = zone(
-            "a.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "a.gov.\t3600\tIN\tNS\tns1.example.net.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
         )
         with self.assertRaisesRegex(ValueError, "zone apex cannot be inferred"):
             MOD.process_zone_stream(stream, "unknown-fixture", (), DummyAggregate())
 
     def test_soa_owner_must_match_inferred_zone_apex(self):
         stream = zone(
-            "a.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "other.\\t3600\\tIN\\tSOA\\tns.other. hostmaster.other. 123 2 3 4 5",
+            "a.gov.\t3600\tIN\tNS\tns1.example.net.",
+            "other.\t3600\tIN\tSOA\tns.other. hostmaster.other. 123 2 3 4 5",
         )
         with self.assertRaisesRegex(ValueError, "SOA owner/class conflicts"):
             MOD.process_zone_stream(stream, "gov-fixture", (), DummyAggregate(), expected_apex="gov")
 
     def test_ns_delegation_owner_must_be_within_zone(self):
         stream = zone(
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
-            "alpha.example.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "alpha.example.\t3600\tIN\tNS\tns1.example.net.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
         )
         with self.assertRaisesRegex(ValueError, "NS delegation owner outside zone"):
             MOD.process_zone_stream(stream, "gov-fixture", (), DummyAggregate())
 
     def test_leading_soa_overrides_filename_inference(self):
         stream = zone(
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
-            "alpha.gov.\\t3600\\tIN\\tNS\\tns1.example.net.",
-            "gov.\\t3600\\tIN\\tSOA\\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
+            "alpha.gov.\t3600\tIN\tNS\tns1.example.net.",
+            "gov.\t3600\tIN\tSOA\tns.gov. hostmaster.gov. 123 2 3 4 5",
         )
         result = MOD.process_zone_stream(
             stream, "gov-2026-10-21.zone.gz", (), DummyAggregate(),

@@ -65,7 +65,7 @@ def preflight(zones_dir: Path, special_zones_file: Path) -> int:
         except Exception as exc:
             # Avoid accidentally exposing a licensed zone record in the
             # publicly readable GitHub Actions logs.
-            raise ValueError(
+            raise SystemExit(
                 f"failed non-leading SOA preflight for {filename} "
                 f"(reason={public_validation_code(exc)})"
             ) from None
